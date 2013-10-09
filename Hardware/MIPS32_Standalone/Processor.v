@@ -18,7 +18,7 @@
  *   and wiring of the building blocks of the processor according to the 
  *   hardware design diagram. It contains very little logic itself.
  */
-module Processor(
+module MIPS32_Processor(
     input  clock,
     input  reset,
     input  [4:0] Interrupts,            // 5 general-purpose hardware interrupts
@@ -59,6 +59,7 @@ module Processor(
     wire IF_Exception_Flush;
     wire IF_IsBDS;
     wire [31:0] IF_PCAdd4, IF_PC_PreExc, IF_PCIn, IF_PCOut, IF_Instruction;
+    wire [4:0] IF_Rs, IF_Rt;
 
     /*** ID (Instruction Decode) Signals ***/
     wire ID_Stall;
@@ -156,6 +157,8 @@ module Processor(
 
     /*** Assignments ***/
     assign IF_Instruction = (IF_Stall) ? 32'h00000000 : InstMem_In;
+    assign IF_Rs = IF_Instruction[25:21];
+    assign IF_Rt = IF_Instruction[20:16];
     assign IF_IsBDS = ID_NextIsDelay;
     assign HAZ_DP_Hazards = {ID_DP_Hazards[7:4], EX_WantRsByEX, EX_NeedRsByEX, EX_WantRtByEX, EX_NeedRtByEX};
     assign IF_EXC_AdIF = IF_PCOut[1] | IF_PCOut[0];
@@ -368,15 +371,17 @@ module Processor(
 
     /*** Register File ***/
     RegisterFile RegisterFile (
-        .clock      (clock),
-        .reset      (reset),
-        .ReadReg1   (Rs),
-        .ReadReg2   (Rt),
-        .WriteReg   (WB_RtRd),
-        .WriteData  (WB_WriteData),
-        .RegWrite   (WB_RegWrite),
-        .ReadData1  (ID_ReadData1_RF),
-        .ReadData2  (ID_ReadData2_RF)
+        .clock        (clock),
+        .reset        (reset),
+        .ReadReg1     (Rs),
+        .ReadReg2     (Rt),
+        .IF_ReadReg1  (IF_Rs),
+        .IF_ReadReg2  (IF_Rt),
+        .WriteReg     (WB_RtRd),
+        .WriteData    (WB_WriteData),
+        .RegWrite     (WB_RegWrite),
+        .ReadData1    (ID_ReadData1_RF),
+        .ReadData2    (ID_ReadData2_RF)
     );
 
     /*** ID Rs Forwarding/Link Mux ***/
