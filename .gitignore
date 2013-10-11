@@ -1,0 +1,6 @@
+.DS__Store
+*.o
+*.lo
+*.a
+*.swp
+cscope.out
