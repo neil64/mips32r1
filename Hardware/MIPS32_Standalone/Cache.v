@@ -1,7 +1,7 @@
 /*
  *  The Instruction and Data caches.
  *
- *  The virtual address from the processor is broken up as follows:
+ *  The address from the processor is broken up as follows:
  *
  *	31                                s               l     2    0
  *	---------------+-------------+---------------+---------------+
@@ -38,7 +38,31 @@
  *
  *  Sets (SETS):
  *	Must be a power-of-2 in size.  This is simply the size of the cache.
- *	Use this to adjust how much block RAM is used.
+ *	Use this to adjust how much block RAM is used.  (Minimum 2, maximum,
+ *      very large.)
+ *
+ *  (Note that at present, this cache does not take into account virtual
+ *   vs. physical addresses.  If it is later converted to VIPT cache, a
+ *   few changes would be needed, such as a separate refill address register,
+ *   since cache addresses and memory addresses would no longer be related.)
+ */
+
+
+/*
+ *  TODO:
+
+    *   Verify that RAM address conflicts are dealt with.  So long as the
+        read port gives reliable data (either new or old), there is no
+        problem.  The Altera block RAM meets this requirement.  The Xilinx
+        RAM (at least on the Spartan-6 and Vertex parts), have an issue
+        if the RAM is not configured in READ_FIRST mode (the default is
+        WRITE_FIRST mode).
+
+    *   Verify that all cofiguration cases are taken care of, particularly
+        when WAYS > 1.
+
+    *   
+
  */
 
 
@@ -95,11 +119,11 @@ module MIPS32_ICache
 
     /****************************************/
 
-    localparam	OFFSET_WIDTH = logb2(LINE_SIZE-1) - 2;
-    localparam	OFFSET_LSB = 2;
-    localparam	OFFSET_MSB = OFFSET_LSB + OFFSET_WIDTH - 1;
+    localparam	OFF_WIDTH = logb2(LINE_SIZE-1) - 2;
+    localparam	OFF_LSB = 2;
+    localparam	OFF_MSB = OFF_LSB + OFF_WIDTH - 1;
     localparam	SET_WIDTH = logb2(SETS-1);
-    localparam	SET_LSB = OFFSET_MSB + 1;
+    localparam	SET_LSB = OFF_MSB + 1;
     localparam	SET_MSB = SET_LSB + SET_WIDTH - 1;
     localparam	TAG_LSB = SET_MSB + 1;
     localparam	TAG_MSB = 31;
@@ -107,7 +131,7 @@ module MIPS32_ICache
 
     localparam	TA_WIDTH = SET_WIDTH;			// Tag RAM addr width
     localparam	TD_WIDTH = TAG_WIDTH + 1;		// Tag RAM data width
-    localparam	DA_WIDTH = OFFSET_WIDTH + SET_WIDTH;	// Data RAM addr width
+    localparam	DA_WIDTH = OFF_WIDTH + SET_WIDTH;	// Data RAM addr width
 
     /****************************************/
 
@@ -127,8 +151,11 @@ module MIPS32_ICache
     wire		    wayValid[0 : WAYS-1];
     wire		    wayMatch[0 : WAYS-1];
 
+    reg                     validDelayed;
+    reg                     cachedDelayed;
+
     wire		    miss;
-    wire [31:0]             data;
+    wire [31:0]             cacheData;
 
     reg [1:0]               state;      // Refill engine state
     localparam  RS_IDLE = 0;                // No cycle, waiting for processor
@@ -136,9 +163,9 @@ module MIPS32_ICache
     // localparam  RS_FLUSH = 2;
     localparam  RS_WISHBONE = 3;            // Direct uncached cycle
 
-    reg [DA_WIDTH-1:0]      refillAddr;
+    // wire [DA_WIDTH-1:0]     refillAddr;
 
-    // reg [OFFSET_WIDTH-1:0]  refillCount;
+    reg [31:0]              extAddr;        // External (wishbone) address
 
     /****************************************/
     /*
@@ -205,57 +232,65 @@ module MIPS32_ICache
      *	Combinatorial logic.
      */
 
-    // Calculate the address of the requested cache word for the tag & data
-    assign tagReadAddr = Address[SET_MSB : SET_LSB];
-    assign dataReadAddr = Address[SET_MSB : OFFSET_LSB];
+    /****************************************/
+    /*
+     *	Read from the cache.
+     */
 
-    // Check for a match on each way of the selected set
+    assign tagReadAddr = Address[SET_MSB : SET_LSB];    // Tag RAM address
+    assign dataReadAddr = Address[SET_MSB : OFF_LSB];   // Data RAM address
+
     generate
+        // Check for a match on each way of the selected set
 	for (i = 0; i < WAYS; i = i + 1)
-	    assign wayMatch[i] = wayTag[i] == Address[TAG_MSB : TAG_LSB] &&
-				 wayValid[i];
+        begin
+            assign wayTag[i] = tagReadData[i][TAG_WIDTH : 1];
+            assign wayValid[i] = tagReadData[i][0];
+	    assign wayMatch[i] = (wayTag[i] == Address[TAG_MSB : TAG_LSB] &&
+				  wayValid[i]);
+        end
+
+        // Select the data from a valid way
+	if (WAYS == 1)
+	    assign cacheData = dataReadData[0];
+	else if (WAYS == 2)
+	    assign cacheData = wayMatch[0] ? dataReadData[0] :
+			                     dataReadData[1];
+	else if (WAYS == 4)
+	    assign cacheData = wayMatch[0] ? dataReadData[0] :
+                               wayMatch[1] ? dataReadData[1] :
+                               wayMatch[2] ? dataReadData[2] :
+                                             dataReadData[3];
     endgenerate
 
     // Hit or miss?
-    assign miss = ~|wayMatch;
+    assign miss = !|wayMatch;
 
-    // Get data from the cache for the CPU
-    generate
-	if (WAYS == 1)
-	    assign data = dataReadData[0];
-	else if (WAYS == 2)
-	    assign data = wayMatch[0] ? dataReadData[0] :
-			                dataReadData[1];
-	else if (WAYS == 4)
-	    assign data = wayMatch[0] ? dataReadData[0] :
-                          wayMatch[1] ? dataReadData[1] :
-                          wayMatch[2] ? dataReadData[2] :
-                                        dataReadData[3];
-    endgenerate
+    /****************************************/
+    /*
+     *	Refill logic.
+     */
 
-    // True if we should refill
+    // True if we are refilling
     assign refill = (state == RS_REFILL);
     // assign refill0 = Valid && miss;
     // assign refill1 = (state == RS_REFILL);
     // assign refill = refill0 || refill1;
 
+    // True if we have an uncached cycle
+    assign uncached = (state == RS_WISHBONE);
+
     // The refill address -- the address at the start of the cache line
-    assign refillAddr0 = { Address[31 : SET_LSB], { OFFSET_WIDTH+2{1'b0}} };
+    // assign refillAddr0 = { Address[31 : SET_LSB], { OFF_WIDTH+2{1'b0}} };
 
     // True if this is the last refill cycle
     generate
         if (LINE_SIZE == 4)
             assign last = 1'b1;
         else
-            assign last = refillAddr[OFFSET_WIDTH-1:0] == {OFFSET_WIDTH{1'b1}};
+            assign last = (extAddr[OFF_MSB : OFF_LSB] == {OFF_WIDTH{1'b1}});
             // assign last = (refillCount == 0);
     endgenerate
-
-    // True if we have an uncached cycle
-    assign uncached = Valid && !Cached;
-
-    // Wishbone ACK (treat retry and error as a regular ack)
-    assign ack = ACK_I || RTY_I || ERR_I;
 
     /****************************************/
     /*
@@ -275,30 +310,29 @@ module MIPS32_ICache
     // assign LOCK_O = 1'b0;
 
 
-    assign CYC_O = (state == RS_REFILL || state == RS_WISHBONE);
-    assign STB_O = CYC_O;
+    assign CYC_O = refill || uncached;
+    assign STB_O = refill || uncached;
+    // assign CYC_O = (state == RS_REFILL || state == RS_WISHBONE);
+    // assign STB_O = CYC_O;
     assign CTI_O = (refill && !last) ? 3'b010 : 3'b111;
     assign BTE_O = 2'b00;
-    assign ADR_O = wbAddr;
+    assign ADR_O = extAddr;
     assign DAT_O = 32'bx;
     assign SEL_O = 4'bx;
     assign WE_O = 1'b0;
     assign LOCK_O = 1'b0;
 
-    /*
-     *	Processor bus.
-     */
-    assign Stall = miss || (uncached && !ack);
-    assign In = Cached ? data : DAT_I;
+    // Wishbone ACK (treat retry and error as a regular ack)
+    assign ack = ACK_I || RTY_I || ERR_I;
 
     /****************************************/
     /*
      *	Write to the cache.
      */
 
-    assign tagWriteAddr = wbAddr[SET_MSB : SET_LSB];
-    assign tagWriteData = { wbAddr[TAG_MSB : TAG_LSB], 1'b1 };
-    assign dataWriteAddr = wbAddr[SET_MSB : OFFSET_LSB];
+    assign tagWriteAddr = extAddr[SET_MSB : SET_LSB];
+    assign tagWriteData = { extAddr[TAG_MSB : TAG_LSB], 1'b1 };
+    assign dataWriteAddr = extAddr[SET_MSB : OFF_LSB];
     assign dataWriteData = DAT_I;
 
     generate
@@ -311,6 +345,13 @@ module MIPS32_ICache
 
     /****************************************/
     /*
+     *	Processor bus.
+     */
+    assign Stall = (miss && validDelayed) || (uncached && !ack);
+    assign In = cachedDelayed ? cacheData : DAT_I;
+
+    /**********************************************************************/
+    /*
      *	State machine.
      */
 
@@ -322,15 +363,19 @@ module MIPS32_ICache
             begin
                 if (Valid && Cached && miss)
                 begin
+
+// This is wrong.  extAddr needs to be set one cycle earlier.
+xxxx
+
                     state <= RS_REFILL;
-                    wbAddr <= { Address[31 : SET_LSB], {OFFSET_WIDTH+2{1'b0}} };
-                    refillCount <= {OFFSET_WIDTH{1'b1}};
+                    extAddr <= { Address[31 : SET_LSB], {OFF_WIDTH+2{1'b0}} };
+                    refillCount <= {OFF_WIDTH{1'b1}};
                 end
 
                 if (Valid && !Cached)
                 begin
                     state <= RS_WISHBONE;
-                    wbAddr <= Address;
+                    extAddr <= Address;
                 end
             end
 
@@ -338,7 +383,7 @@ module MIPS32_ICache
             begin
                 if (ack)
                 begin
-                    wbAddr <= wbAddr + 32'd4;
+                    extAddr <= extAddr + 32'd4;
                     refillCount <= refillCount - 1;
 
                     if (last)
@@ -360,6 +405,9 @@ module MIPS32_ICache
             end
         endcase
 
+        // House keeping
+        validDelayed <= Valid;
+        cachedDelayed <= Cached;
 
     end
 
