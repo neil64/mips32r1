@@ -89,8 +89,8 @@ module MIPS32_ICache
 
     // Processor bus
     input [31:0]        Address,        // Access address
-    input               Valid,          // Valid access
     input               Cached,         // Access should use the cache
+    input               Valid,          // Valid access
     output              Stall,          // Result not yet available
     output [31:0]       In,             // Resulting data
 

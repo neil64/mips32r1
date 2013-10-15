@@ -18,6 +18,9 @@
  *   and wiring of the building blocks of the processor according to the 
  *   hardware design diagram. It contains very little logic itself.
  */
+
+`define NEWBUS	1
+
 module MIPS32_Processor(
     input  clock,
     input  reset,
@@ -31,10 +34,18 @@ module MIPS32_Processor(
     output [29:0] DataMem_Address,      // Addresses are words, not bytes.
     output [31:0] DataMem_Out,
     // Instruction Memory Interface
+`ifdef NEWBUS
+    output [31:0] Inst_Address,
+    output Inst_Cached,
+    output Inst_Valid,
+    input Inst_Stall,
+    input [31:0] Inst_In,
+`else // NEWBUS
     input  [31:0] InstMem_In,
     output [29:0] InstMem_Address,      // Addresses are words, not bytes.
     input  InstMem_Ready,
     output InstMem_Read,
+`endif // NEWBUS
     output [7:0] IP                     // Pending interrupts (diagnostic)
     );
 
@@ -156,7 +167,11 @@ module MIPS32_Processor(
     wire [7:0] ID_DP_Hazards, HAZ_DP_Hazards;
 
     /*** Assignments ***/
+`ifdef NEWBUS
+    assign IF_Instruction = (IF_Stall) ? 32'h00000000 : Inst_In;
+`else // NEWBUS
     assign IF_Instruction = (IF_Stall) ? 32'h00000000 : InstMem_In;
+`endif // NEWBUS
     assign IF_Rs = IF_Instruction[25:21];
     assign IF_Rt = IF_Instruction[20:16];
     assign IF_IsBDS = ID_NextIsDelay;
@@ -165,6 +180,21 @@ module MIPS32_Processor(
     assign ID_CanErr = ID_ID_CanErr | ID_EX_CanErr | ID_M_CanErr;
     assign EX_CanErr = EX_EX_CanErr | EX_M_CanErr;
     assign M_CanErr  = M_M_CanErr;
+
+`ifdef NEWBUS
+    // External Memory Interface
+
+    // Set if insn memory is cached.
+    wire ICached = (IF_PCIn[31] == 1'b0);
+	// TBD, but for now the first 2GB is cached.
+
+    assign Inst_Address = { IF_PCIn[31:2], 2'b00 };
+    assign Inst_Cached = ICached;
+    assign Inst_Valid = 1'b1;
+
+    assign DataMem_Address = M_ALUResult[31:2];
+
+`else // NEWBUS
 
     // External Memory Interface
     reg IRead, IReadMask;
@@ -175,6 +205,7 @@ module MIPS32_Processor(
         IReadMask <= (reset) ? 0 : ((IRead & InstMem_Ready) ? 1 : ((~IF_Stall) ? 0 : IReadMask));
     end
     assign InstMem_Read = IRead & ~IReadMask;
+`endif // NEWBUS
 
 
     /*** Datapath Controller ***/
@@ -242,8 +273,12 @@ module MIPS32_Processor(
         .WB_RegWrite         (WB_RegWrite),
         .MEM_MemRead         (M_MemRead),
         .MEM_MemWrite        (M_MemWrite),
+`ifdef NEWBUS
+	.Inst_Stall	     (Inst_Stall),
+`else // NEWBUS
         .InstMem_Read        (InstMem_Read),
         .InstMem_Ready       (InstMem_Ready),
+`endif // NEWBUS
         .Mfc0                (ID_Mfc0),
         .IF_Exception_Stall  (IF_Exception_Stall),
         .ID_Exception_Stall  (ID_Exception_Stall),

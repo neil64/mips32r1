@@ -22,6 +22,10 @@
  *
  *   This module is heavily commented. Read below for more information.
  */
+
+`define NEWBUS	1
+
+
 module Hazard_Detection(
     input  [7:0] DP_Hazards,
     input  [4:0] ID_Rs,
@@ -39,6 +43,9 @@ module Hazard_Detection(
     input  MEM_MemWrite,        // Needed for Store Conditional which writes to a register
     input  InstMem_Read,
     input  InstMem_Ready,
+`ifdef NEWBUS
+    input  Inst_Stall,
+`endif // NEWBUS
     input  Mfc0,                // Using fwd mux; not part of haz/fwd.
     input  IF_Exception_Stall,
     input  ID_Exception_Stall,
@@ -162,7 +169,11 @@ module Hazard_Detection(
     assign  M_Stall = IF_Stall | M_Stall_Controller;
     assign EX_Stall = (EX_Stall_1 | EX_Stall_2 | EX_Exception_Stall) | EX_ALU_Stall | M_Stall;
     assign ID_Stall = (ID_Stall_1 | ID_Stall_2 | ID_Stall_3 | ID_Stall_4 | ID_Exception_Stall) | EX_Stall;
+`ifdef NEWBUS
+    assign IF_Stall = Inst_Stall | IF_Exception_Stall;
+`else // NEWBUS
     assign IF_Stall = InstMem_Read | InstMem_Ready | IF_Exception_Stall;
+`endif // NEWBUS
     
     // Forwarding Control Final Assignments
     assign ID_RsFwdSel = (ID_Fwd_1) ? 2'b01 : ((ID_Fwd_3) ? 2'b10 : 2'b00);
