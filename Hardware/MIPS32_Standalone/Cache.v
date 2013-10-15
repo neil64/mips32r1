@@ -61,7 +61,12 @@
     *   Verify that all cofiguration cases are taken care of, particularly
         when WAYS > 1.
 
-    *   
+    *
+
+    NOTE:
+
+    *   Aborted cached cycles work;  aborting an uncached cycle will give
+        wrong data to later cycles.
 
  */
 
@@ -159,9 +164,10 @@ module MIPS32_ICache
 
     reg [1:0]               state;      // Refill engine state
     localparam  RS_IDLE = 0;                // No cycle, waiting for processor
-    localparam  RS_REFILL = 1;              // Filling a cache line
+    localparam  RS_WISHBONE = 1;            // Direct uncached cycle
+    localparam  RS_REFILL0 = 2;             // Starting to fill a cache line
+    localparam  RS_REFILL1 = 3;             // Filling a cache line
     // localparam  RS_FLUSH = 2;
-    localparam  RS_WISHBONE = 3;            // Direct uncached cycle
 
     // wire [DA_WIDTH-1:0]     refillAddr;
 
@@ -272,10 +278,20 @@ module MIPS32_ICache
      */
 
     // True if we are refilling
+    // assign refill0 = (state == RS_REFILL0);
+    // assign refill = (state == RS_REFILL0 || state == RS_REFILL1);
     assign refill = (state == RS_REFILL);
     // assign refill0 = Valid && miss;
     // assign refill1 = (state == RS_REFILL);
     // assign refill = refill0 || refill1;
+
+    // True if we should run a wishbone cycle for refill
+    assign refillGo = refill && (miss || !refillBegin);
+    // assign refillGo = (refill0 && miss) || refill1;
+
+    // True if we are actively refilling
+    assign refill0 = (validDelayed && cachedDelayed && miss);
+    assign refilling = refill0 || (state == RS_REFILL);
 
     // True if we have an uncached cycle
     assign uncached = (state == RS_WISHBONE);
@@ -310,10 +326,8 @@ module MIPS32_ICache
     // assign LOCK_O = 1'b0;
 
 
-    assign CYC_O = refill || uncached;
-    assign STB_O = refill || uncached;
-    // assign CYC_O = (state == RS_REFILL || state == RS_WISHBONE);
-    // assign STB_O = CYC_O;
+    assign CYC_O = refilling || uncached;
+    assign STB_O = refilling || uncached;
     assign CTI_O = (refill && !last) ? 3'b010 : 3'b111;
     assign BTE_O = 2'b00;
     assign ADR_O = extAddr;
@@ -329,6 +343,8 @@ module MIPS32_ICache
     /*
      *	Write to the cache.
      */
+
+    assign storeCache = refilling && ack;
 
     assign tagWriteAddr = extAddr[SET_MSB : SET_LSB];
     assign tagWriteData = { extAddr[TAG_MSB : TAG_LSB], 1'b1 };
@@ -355,12 +371,103 @@ module MIPS32_ICache
      *	State machine.
      */
 
+    assign cacheAccess = Valid && Cached;
+    assign extAccess = Valid && !Cached;
+
+
+    assign fillStrobe = (maybeFill && miss) || (state == RS_FILLING);
+    assign extStrobe = (state == RS_DIRECT);
+
+    assign storeCache = fillStrobe && ack;
+
+    assign Stall = (cacheAccessDelayed && miss) ||
+                   (extStrobe && !ack) ||
+                   relax;
+
+
+    always @(posedge clock)
+    begin
+
+        cacheAccessDelayed <= cacheAccess;
+        extAccessDelayed <= extAccess;
+        maybeFill <= 1'b0;
+        relax <= 1'b0;
+
+        if (storeCache)
+            extAddr <= extAddr + 32'd4;
+
+        case (state)
+
+            RS_IDLE:
+            begin
+                if (maybeFill && miss && !(last && ack))
+                begin
+                    state <= RS_FILLING;
+                end
+                else if (cacheAccess)
+                begin
+                    maybeFill <= 1'b1;
+                    extAddr <= { Address[31 : SET_LSB], {OFF_WIDTH+2{1'b0}} };
+                end
+                else if (extAccess)
+                begin
+                    state <= RS_DIRECT;
+                    extAddr <= Address;
+                end
+
+                // if (cacheAccessDelayed && miss && (!last || !ack))
+            end
+
+            RS_FILLING:
+            begin
+                if (last && ack)
+                begin
+                    state <= RS_IDLE;
+
+                    if (waySelect == WAYS-1)
+                        waySelect <= 0;
+                    else
+                        waySelect <= waySelect + 1;
+                end
+            end
+
+            RS_DIRECT:
+                if (ack)
+                begin
+                    state <= RS_IDLE;
+                    relax <= 1'b1;
+                end
+
+        endcase
+
+    end
+
+
+
     always @(posedge clock)
     begin
 
         case (state)
             RS_IDLE:
             begin
+                if (Valid && Cached)
+                begin
+                    state <= RS_FREFILL;
+                    refillBegin <= 1'b1;
+                    extAddr <= { Address[31 : SET_LSB], {OFF_WIDTH+2{1'b0}} };
+                end
+
+                // if (validDelayed && cachedDelayed && miss)
+                // else
+                if (Valid && !Cached)
+                begin
+                    state <= RS_WISHBONE;
+                    extAddr <= Address;
+                end
+
+
+
+`ifdef crap
                 if (Valid && Cached && miss)
                 begin
 
@@ -377,25 +484,43 @@ xxxx
                     state <= RS_WISHBONE;
                     extAddr <= Address;
                 end
+`endif // crap
+
+            end
+
+            RS_REFILL0:
+            begin
+                if (miss)
+                    state <= RS_REFILL;
+                else
+                    state <= RS_IDLE;
             end
 
             RS_REFILL:
             begin
-                if (ack)
+                if (refillBegin && !miss)
+                    state <= RS_IDLE;
+                else
                 begin
-                    extAddr <= extAddr + 32'd4;
-                    refillCount <= refillCount - 1;
-
-                    if (last)
+                    if (ack)
                     begin
-                        state <= RS_IDLE;
+                        extAddr <= extAddr + 32'd4;
+                        refillCount <= refillCount - 1;
 
-                        if (waySelect == WAYS-1)
-                            waySelect <= 0;
-                        else
-                            waySelect <= waySelect + 1;
+                        if (last)
+                        begin
+                            state <= RS_IDLE;
+
+                            if (waySelect == WAYS-1)
+                                waySelect <= 0;
+                            else
+                                waySelect <= waySelect + 1;
+                        end
                     end
                 end
+
+                refillBegin <= 1'b0;
+
             end
 
             RS_WISHBONE:
@@ -408,6 +533,16 @@ xxxx
         // House keeping
         validDelayed <= Valid;
         cachedDelayed <= Cached;
+
+        // Store refill data to cache
+        // if (refilling && ack)
+        // begin
+        // end
+
+        if (storeCache)
+        begin
+            extAddr <= extAddr + 32'd4;
+        end
 
     end
 
