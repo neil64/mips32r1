@@ -19,7 +19,7 @@
  *   hardware design diagram. It contains very little logic itself.
  */
 
-`define NEWBUS	1
+`define NEWBUS
 
 module MIPS32_Processor(
     input  clock,

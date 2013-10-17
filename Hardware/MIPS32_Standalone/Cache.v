@@ -81,7 +81,7 @@ module MIPS32_ICache
                                     // Default is a 16K cache
     parameter   WAYS = 2,           // Associativity (1, 2 or 4)
                 LINE_SIZE = 16,     // Cache line size (4, 8, 16, 32, 64)
-                SETS = 128,         // Cache size
+                SETS = 128          // Cache size
 )
 (
     input               clock,
@@ -146,17 +146,20 @@ module MIPS32_ICache
     wire [TD_WIDTH-1 : 0]   tagReadData[0 : WAYS-1];
     wire [TA_WIDTH-1 : 0]   tagWriteAddr;
     wire [TD_WIDTH-1 : 0]   tagWriteData;
-    wire                    tagWriteEnable[0 : WAYS-1];
+    wire [WAYS-1 : 0]       tagWriteEnable;
+    // wire                    tagWriteEnable[0 : WAYS-1];
 
     wire [DA_WIDTH-1 : 0]   dataReadAddr;
     wire [31 : 0]           dataReadData[0 : WAYS-1];
     wire [DA_WIDTH-1 : 0]   dataWriteAddr;
     wire [31 : 0]           dataWriteData;
-    wire                    dataWriteEnable[0 : WAYS-1];
+    wire [WAYS-1 : 0]       dataWriteEnable;
+    // wire                    dataWriteEnable[0 : WAYS-1];
 
     wire [TAG_WIDTH-1 : 0]  wayTag[0 : WAYS-1];
-    wire                    wayValid[0 : WAYS-1];
-    wire                    wayMatch[0 : WAYS-1];
+    wire [WAYS-1:0]         wayValid;
+    wire [WAYS-1:0]         wayMatch;
+    reg [WAYS-1:0]          waySelect;
     wire                    miss;
     wire [31:0]             cacheData;
     wire                    storeCache;
@@ -176,9 +179,11 @@ module MIPS32_ICache
     localparam  RS_IDLE = 0;                // No cycle, waiting for processor
     localparam  RS_FILLING = 1;             // Filling a cache line
     localparam  RS_DIRECT = 2;              // Direct uncached cycle
-    // localparam  RS_FLUSH = 2;
+    localparam  RS_INIT = 3;
 
     reg                     maybeFill;      // We may start a refill next cycle
+    reg                     relax;          // Relaxation cycle for wishbone
+    wire                    flushing;       // Set if we are flushing
 
     reg [31:0]              extAddr;        // External (wishbone) address
 
@@ -253,7 +258,7 @@ module MIPS32_ICache
     generate
         // Check for a match on each way of the selected set
         for (i = 0; i < WAYS; i = i + 1)
-        begin
+        begin : match
             assign wayTag[i] = tagReadData[i][TAG_WIDTH : 1];
             assign wayValid[i] = tagReadData[i][0];
             assign wayMatch[i] = (wayTag[i] == Address[TAG_MSB : TAG_LSB] &&
@@ -274,7 +279,7 @@ module MIPS32_ICache
     endgenerate
 
     // Hit or miss?
-    assign miss = !|wayMatch;
+    assign miss = cacheAccessDelayed && ~(|wayMatch);
 
     /****************************************/
     /*
@@ -308,6 +313,13 @@ module MIPS32_ICache
 
     /****************************************/
     /*
+     *  Flush, invalidate, evict, ...
+     */
+
+    assign flushing = (state == RS_INIT);
+
+    /****************************************/
+    /*
      *  Wishbone bus.
      */
 
@@ -331,22 +343,40 @@ module MIPS32_ICache
 
     // True if we are to store incoming data to the cache
     assign storeCache = fillStrobe && ack;
+    wire storeValid = !flushing;
 
     // Cache memory addresses to write incoming data
     assign tagWriteAddr = extAddr[SET_MSB : SET_LSB];
-    assign tagWriteData = { extAddr[TAG_MSB : TAG_LSB], 1'b1 };
+    assign tagWriteData = { extAddr[TAG_MSB : TAG_LSB], storeValid };
     assign dataWriteAddr = extAddr[SET_MSB : OFF_LSB];
 
     // Incoming cache fill data
     assign dataWriteData = DAT_I;
 
+    // Write enable signals for each way of tag and data RAM
+    wire tagWriteEnable0 = (storeCache && last) ? 1'b1 : 1'b0;
+    wire tagWriteEnable1 = {WAYS{tagWriteEnable0}} & waySelect;
+    wire tagWriteEnable2 = {WAYS{flushing}};
+    assign tagWriteEnable = tagWriteEnable1 | tagWriteEnable2;
+
+    assign dataWriteEnable0 = (storeCache) ? 1'b1 : 1'b0;
+    assign dataWriteEnable = {WAYS{dataWriteEnable0}} & waySelect;
+
     // Select the correct Way to write the data to
     generate
-        for (i = 0; i < WAYS; i = i + 1)
-        begin : wayWrite
-            assign tagWriteEnable[i] = (waySelect == i) && last;
-            assign dataWriteEnable[i] = (waySelect == i);
-        end
+        // for (i = 0; i < WAYS; i = i + 1)
+        // begin : wayWrite
+            // assign tagWriteEnable[i] = (storeCache && last) ? waySelect[i] : 0;
+            // assign dataWriteEnable[i] = (storeCache) ? waySelect[i] : 0;
+        // end
+
+        if (WAYS > 1)
+            always @(posedge clock)
+                if (reset)
+                    waySelect <= {WAYS{1'b1}};
+                else if (last && ack)
+                    waySelect <= { waySelect[WAYS-2:0], waySelect[WAYS-1] };
+
     endgenerate
 
     /****************************************/
@@ -357,7 +387,8 @@ module MIPS32_ICache
     // True if the processor should stall, because there's no valid data for it
     assign Stall = (cacheAccessDelayed && miss) ||
                    (extStrobe && !ack) ||
-                   relax;
+                   relax ||
+                   flushing;
 
     // Route the data to the processor, either from cache or external memory
     assign In = cacheAccessDelayed ? cacheData : DAT_I;
@@ -370,30 +401,42 @@ module MIPS32_ICache
     always @(posedge clock)
     begin
 
-        // Delay the access type signals
-        cacheAccessDelayed <= cacheAccess;
-        extAccessDelayed <= extAccess;
+        if (reset)
+        begin
 
-        // Clear pulse signals
-        maybeFill <= 1'b0;
-        relax <= 1'b0;
+            state <= RS_INIT;
+            cacheAccessDelayed <= 1'b0;
+            extAccessDelayed <= 1'b0;
+            maybeFill <= 1'b0;
+            relax <= 1'b0;
+            extAddr <= 32'd0;
 
-        // If we retrieved data for the cache, increment the address
-        if (storeCache)
-            extAddr <= extAddr + 32'd4;
+        end else begin
 
-        // The state machine
-        case (state)
+            // Delay the access type signals
+            cacheAccessDelayed <= cacheAccess;
+            extAccessDelayed <= extAccess;
+
+            // Clear pulse signals
+            maybeFill <= 1'b0;
+            relax <= 1'b0;
+
+            // If we retrieved data for the cache, increment the address
+            if (storeCache)
+                extAddr <= extAddr + 32'd4;
+
+            // The state machine
+            case (state)
 
             RS_IDLE:            // No active external access
             begin
                 if (maybeFill && miss && !(last && ack))
                 begin
                     /*
-		     *	Start the second cycle of the refill.  (Skip the
-		     *	additional cycles if our cache has a single word line
-		     *	size and the memory responded within a single cycle;
-		     *	rare but possible.)
+                     *	Start the second cycle of the refill.  (Skip the
+                     *	additional cycles if our cache has a single word line
+                     *	size and the memory responded within a single cycle;
+                     *	rare but possible.)
                      */
                     state <= RS_FILLING;
                 end
@@ -422,19 +465,10 @@ module MIPS32_ICache
                 if (last && ack)
                 begin
                     /*
-		     *	We are currently receiving the last word of the fill.
-		     *	Stop the refill.
+                     *	We are currently receiving the last word of the fill.
+                     *	Stop the refill.
                      */
                     state <= RS_IDLE;
-
-                    /*
-		     *	Select a different Way for replacement on the next
-		     *	cycle.
-                     */
-                    if (waySelect == WAYS-1)
-                        waySelect <= 0;
-                    else
-                        waySelect <= waySelect + 1;
                 end
             end
 
@@ -453,7 +487,16 @@ module MIPS32_ICache
                 end
             end
 
-        endcase
+            RS_INIT:
+            begin
+                if (extAddr[TAG_LSB])
+                    state <= RS_IDLE;
+                extAddr <= extAddr + (1 << SET_LSB);
+            end
+
+            endcase
+
+        end
 
     end
 

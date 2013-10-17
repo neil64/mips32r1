@@ -23,7 +23,7 @@
  *   This module is heavily commented. Read below for more information.
  */
 
-`define NEWBUS	1
+`define NEWBUS
 
 
 module Hazard_Detection(

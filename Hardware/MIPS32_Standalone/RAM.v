@@ -54,7 +54,7 @@ module MIPS32_RAM
 
 	    // Write each byte, if allowed
 	    for (i = 0; i < DWIDTH/8; i = i + 1)
-	    begin
+	    begin : wr
 		always @(posedge clock)
 		    if (writeLane[i])
 			mem[writeAddr][(i*8)+7 : (i*8)] <=
@@ -134,7 +134,7 @@ module MIPS32_DPRAM
 
 	    // Write each byte, if allowed
 	    for (i = 0; i < DWIDTH/8; i = i + 1)
-	    begin
+	    begin : wr
 
 		always @(posedge clock)
 		    if (writeLaneA[i])
