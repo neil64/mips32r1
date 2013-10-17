@@ -19,6 +19,7 @@ module MIPS32_RAM
     input		    reset,
 
     input [AWIDTH-1 : 0]    readAddr,
+    input		    readEnable,
     output [DWIDTH-1 : 0]   readData,
 
     input [AWIDTH-1 : 0]    writeAddr,
@@ -34,7 +35,8 @@ module MIPS32_RAM
 
     // The read side
     always @(posedge clock)
-	ra <= readAddr;
+	if (readEnable)
+	    ra <= readAddr;
     assign readData = mem[ra];
 
 
@@ -81,6 +83,7 @@ module MIPS32_DPRAM
     input		    reset,
 
     input [AWIDTH-1 : 0]    readAddrA,
+    input		    readEnableA,
     output [DWIDTH-1 : 0]   readDataA,
 
     input [AWIDTH-1 : 0]    writeAddrA,
@@ -89,6 +92,7 @@ module MIPS32_DPRAM
     input		    writeEnableA,
 
     input [AWIDTH-1 : 0]    readAddrB,
+    input		    readEnableB,
     output [DWIDTH-1 : 0]   readDataB,
 
     input [AWIDTH-1 : 0]    writeAddrB,
@@ -104,12 +108,14 @@ module MIPS32_DPRAM
 
     // The read side (A)
     always @(posedge clock)
-	raA <= readAddrA;
+	if (readEnableA)
+	    raA <= readAddrA;
     assign readDataA = mem[raA];
 
     // The read side (B)
     always @(posedge clock)
-	raB <= readAddrB;
+	if (readEnableB)
+	    raB <= readAddrB;
     assign readDataB = mem[raB];
 
 

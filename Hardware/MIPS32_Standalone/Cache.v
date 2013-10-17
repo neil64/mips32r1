@@ -51,8 +51,6 @@
 /*
  *  TODO:
 
-    *   Handle reset!!!
-
     *   Verify that RAM address conflicts are dealt with.  So long as the
         read port gives reliable data (either new or old), there is no
         problem.  The Altera block RAM meets this requirement.  The Xilinx
@@ -88,9 +86,10 @@ module MIPS32_ICache
     input               reset,
 
     // Processor bus
-    input [31:0]        Address,        // Access address
+    input [31:0]        EarlyAddress,   // Instruction address, one cycle early
+    input [31:0]        Address,        // Instruction address (the PC)
     input               Cached,         // Access should use the cache
-    input               Valid,          // Valid access
+    input               Enable,         // Valid access
     output              Stall,          // Result not yet available
     output [31:0]       In,             // Resulting data
 
@@ -164,12 +163,10 @@ module MIPS32_ICache
     wire [31:0]             cacheData;
     wire                    storeCache;
 
-    wire                    cacheAccess;
-    reg                     cacheAccessDelayed;
+    reg                     cachedAccess;
     wire                    fillStrobe;
     wire                    last;
 
-    wire                    extAccess;
     reg                     extAccessDelayed;
     wire                    extStrobe;
 
@@ -214,6 +211,7 @@ module MIPS32_ICache
 
                 .readAddr   (tagReadAddr),
                 .readData   (tagReadData[i]),
+                .readEnable (Enable),
 
                 .writeAddr  (tagWriteAddr),
                 .writeData  (tagWriteData),
@@ -237,6 +235,7 @@ module MIPS32_ICache
 
                 .readAddr   (dataReadAddr),
                 .readData   (dataReadData[i]),
+                .readEnable (Enable),
 
                 .writeAddr  (dataWriteAddr),
                 .writeData  (dataWriteData),
@@ -252,8 +251,8 @@ module MIPS32_ICache
      *  Read from the cache.
      */
 
-    assign tagReadAddr = Address[SET_MSB : SET_LSB];    // Tag RAM address
-    assign dataReadAddr = Address[SET_MSB : OFF_LSB];   // Data RAM address
+    assign tagReadAddr = EarlyAddress[SET_MSB : SET_LSB];   // Tag RAM address
+    assign dataReadAddr = EarlyAddress[SET_MSB : OFF_LSB];  // Data RAM address
 
     generate
         // Check for a match on each way of the selected set
@@ -279,15 +278,12 @@ module MIPS32_ICache
     endgenerate
 
     // Hit or miss?
-    assign miss = cacheAccessDelayed && ~(|wayMatch);
+    assign miss = !(|wayMatch);
 
     /****************************************/
     /*
      *  Refill logic.
      */
-
-    // True if the current processor cycle is a cached access
-    assign cacheAccess = Valid && Cached;
 
     // True if we are asserting an external cycle for refill
     assign fillStrobe = (maybeFill && miss) || (state == RS_FILLING);
@@ -304,9 +300,6 @@ module MIPS32_ICache
     /*
      *  External cycle logic.
      */
-
-     // True if the current processor cycle is an uncached access
-    assign extAccess = Valid && !Cached;
 
     // True if we are asserting an external cycle for a direct access
     assign extStrobe = (state == RS_DIRECT);
@@ -354,9 +347,9 @@ module MIPS32_ICache
     assign dataWriteData = DAT_I;
 
     // Write enable signals for each way of tag and data RAM
-    wire tagWriteEnable0 = (storeCache && last) ? 1'b1 : 1'b0;
-    wire tagWriteEnable1 = {WAYS{tagWriteEnable0}} & waySelect;
-    wire tagWriteEnable2 = {WAYS{flushing}};
+    wire            tagWriteEnable0 = (storeCache && last) ? 1'b1 : 1'b0;
+    wire [WAYS-1:0] tagWriteEnable1 = {WAYS{tagWriteEnable0}} & waySelect;
+    wire [WAYS-1:0] tagWriteEnable2 = {WAYS{flushing}};
     assign tagWriteEnable = tagWriteEnable1 | tagWriteEnable2;
 
     assign dataWriteEnable0 = (storeCache) ? 1'b1 : 1'b0;
@@ -364,19 +357,17 @@ module MIPS32_ICache
 
     // Select the correct Way to write the data to
     generate
-        // for (i = 0; i < WAYS; i = i + 1)
-        // begin : wayWrite
-            // assign tagWriteEnable[i] = (storeCache && last) ? waySelect[i] : 0;
-            // assign dataWriteEnable[i] = (storeCache) ? waySelect[i] : 0;
-        // end
-
         if (WAYS > 1)
+        begin
             always @(posedge clock)
                 if (reset)
-                    waySelect <= {WAYS{1'b1}};
+                    waySelect <= 1;
                 else if (last && ack)
                     waySelect <= { waySelect[WAYS-2:0], waySelect[WAYS-1] };
-
+        end else begin
+            always @(*)
+                waySelect <= 1'b1;
+        end
     endgenerate
 
     /****************************************/
@@ -385,13 +376,13 @@ module MIPS32_ICache
      */
 
     // True if the processor should stall, because there's no valid data for it
-    assign Stall = (cacheAccessDelayed && miss) ||
+    assign Stall = (miss) ||
                    (extStrobe && !ack) ||
                    relax ||
                    flushing;
 
     // Route the data to the processor, either from cache or external memory
-    assign In = cacheAccessDelayed ? cacheData : DAT_I;
+    assign In = cachedAccess ? cacheData : DAT_I;
 
     /**********************************************************************/
     /*
@@ -405,17 +396,16 @@ module MIPS32_ICache
         begin
 
             state <= RS_INIT;
-            cacheAccessDelayed <= 1'b0;
-            extAccessDelayed <= 1'b0;
+            cachedAccess <= 1'b0;
             maybeFill <= 1'b0;
             relax <= 1'b0;
             extAddr <= 32'd0;
 
         end else begin
 
-            // Delay the access type signals
-            cacheAccessDelayed <= cacheAccess;
-            extAccessDelayed <= extAccess;
+            // Remember the type of access
+            if (Enable)
+                cachedAccess <= Cached;
 
             // Clear pulse signals
             maybeFill <= 1'b0;
@@ -440,7 +430,7 @@ module MIPS32_ICache
                      */
                     state <= RS_FILLING;
                 end
-                else if (cacheAccess)
+                else if (Enable && Cached)
                 begin
                     /*
                      *  Provisionally start a refill cycle.  At this point,
@@ -448,15 +438,24 @@ module MIPS32_ICache
                      *  refill, but only if there is a cache miss.
                      */
                     maybeFill <= 1'b1;
-                    extAddr <= { Address[31 : SET_LSB], {OFF_WIDTH+2{1'b0}} };
+                    extAddr <= {EarlyAddress[31:SET_LSB], {OFF_WIDTH+2{1'b0}}};
                 end
-                else if (extAccess)
+                else if (!Enable && cachedAccess && miss)
+                begin
+                    /*
+                     *  We just finished some sort of cycle and we are finding
+                     *  the processor waiting to start a refill.  So go.
+                     */
+                    state <= RS_FILLING;
+                    extAddr <= {EarlyAddress[31:SET_LSB], {OFF_WIDTH+2{1'b0}}};
+                end
+                else if ((Enable && !Cached) || (!Enable && !cachedAccess))
                 begin
                     /*
                      *  Start an external access.
                      */
                     state <= RS_DIRECT;
-                    extAddr <= Address;
+                    extAddr <= EarlyAddress;
                 end
             end
 

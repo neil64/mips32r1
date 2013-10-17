@@ -35,11 +35,12 @@ module MIPS32_Processor(
     output [31:0] DataMem_Out,
     // Instruction Memory Interface
 `ifdef NEWBUS
-    output [31:0] Inst_Address,
-    output Inst_Cached,
-    output Inst_Valid,
-    input Inst_Stall,
-    input [31:0] Inst_In,
+    output [31:0] Inst_EarlyAddress,	// Instruction address, one cycle early
+    output [31:0] Inst_Address,		// Normal instruction address;  PC
+    output	  Inst_Cached,		// Use the cache to satisfy the fetch
+    output	  Inst_Enable,		// Valid access cycle
+    input	  Inst_Stall,		// Memory is stalling us
+    input [31:0]  Inst_In,		// Instruction data
 `else // NEWBUS
     input  [31:0] InstMem_In,
     output [29:0] InstMem_Address,      // Addresses are words, not bytes.
@@ -188,9 +189,19 @@ module MIPS32_Processor(
     wire ICached = (IF_PCIn[31] == 1'b0);
 	// TBD, but for now the first 2GB is cached.
 
-    assign Inst_Address = { IF_PCIn[31:2], 2'b00 };
+    // Startup cycle request, to happen on the second clock edge
+    // after reset goes away
+    reg [2:0] StartupStimulus;
+    always @(posedge clock)
+	if (reset)
+	    StartupStimulus <= 3'b100;
+	else
+	    StartupStimulus <= StartupStimulus >> 1;
+
+    assign Inst_EarlyAddress = { IF_PCIn[31:2], 2'b00 };
+    assign Inst_Address = { IF_PCOut[31:2], 2'b00 };
     assign Inst_Cached = ICached;
-    assign Inst_Valid = 1'b1;
+    assign Inst_Enable = !(IF_Stall | ID_Stall) || StartupStimulus[0];
 
     assign DataMem_Address = M_ALUResult[31:2];
 
@@ -370,7 +381,7 @@ module MIPS32_Processor(
     );
 
     /*** Program Counter (MIPS spec is 0xBFC00000 starting address) ***/
-    Register #(.WIDTH(32), .INIT(EXC_Vector_Base_Reset)) PC (
+    Register #(.WIDTH(32), .INIT(EXC_Vector_Base_Reset-4)) PC (
         .clock   (clock),
         .reset   (reset),
         //.enable  (~IF_Stall),   // XXX verify. HERE. Was 1 but on stall latches PC+4, ad nauseum.
