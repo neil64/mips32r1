@@ -26,8 +26,42 @@ module RegisterFile(
     output [31:0] ReadData1, ReadData2
     );
 
-`define CLOCKED_NEG_REGS
+`define DISTRAM
+// `define CLOCKED_NEG_REGS
+// `define CLOCKED_REGS
 
+
+`ifdef DISTRAM
+
+
+// (* ram_style = "distributed" *) reg [DATA-1:0] mem[(2**ADDR)-1:0];
+
+// always @(posedge clk) begin
+// rd0_data    <= mem[rd0_addr];
+// rd1_data    <= mem[rd1_addr];
+// if(wr_en) begin
+// mem[wr_addr]    <= wr_data;
+// end
+// end
+
+// endmodule
+
+
+    // Register file of 32 32-bit registers.  Hopefully inferred to a
+    // RAM32x2Q -- quad port distributed RAM (RAM in LUTs).
+    (* ram_style = "distributed" *) reg [31:0] registers[0:31];
+
+    // Sequential (clocked) write.
+    // 'WriteReg' is the register index to write. 'RegWrite' is the command.
+    always @(posedge clock)
+        if (RegWrite)
+            registers[WriteReg] <= WriteData;
+
+    // Combinatorial Read. Register 0 is all 0s.
+    assign ReadData1 = (ReadReg1 == 0) ? 32'h00000000 : registers[ReadReg1];
+    assign ReadData2 = (ReadReg2 == 0) ? 32'h00000000 : registers[ReadReg2];
+
+`else // DISTRAM
 `ifdef CLOCKED_NEG_REGS
 
     // Register file of 32 32-bit registers.  Hopefully inferred to a
@@ -49,16 +83,35 @@ module RegisterFile(
     end
 
     // The read. Register 0 is all 0s.
-    //
-    // (Because of the registering of the addresses above on the negative
-    //  clock edge, we retrieve the register data in the second part of
-    //  the cycle, which has the contents ready at the end of the cycle as
-    //  required.  The RAM is plenty fast enough for this to work (on the
-    //  Xilinx Spartan-6).
     assign ReadData1 = (reg1 == 0) ? 32'h00000000 : registers[reg1];
     assign ReadData2 = (reg2 == 0) ? 32'h00000000 : registers[reg2];
 
 `else // CLOCKED_NEG_REGS
+`ifdef CLOCKED_REGS
+
+    // Register file of 32 32-bit registers.  Hopefully inferred to a
+    // dual ported RAM.  The pipelined register addresses fit the model
+    // of block RAM.
+    reg [31:0] registers[0:31];
+    reg [4:0]   reg1, reg2;
+
+    // Sequential (clocked) write.
+    // 'WriteReg' is the register index to write. 'RegWrite' is the command.
+    always @(posedge clock)
+        if (RegWrite)
+            registers[WriteReg] <= WriteData;
+
+    // Pipeline the read register addresses.
+    always @(posedge clock) begin
+        reg1 <= IF_ReadReg1;
+        reg2 <= IF_ReadReg2;
+    end
+
+    // The read. Register 0 is all 0s.
+    assign ReadData1 = (reg1 == 0) ? 32'h00000000 : registers[reg1];
+    assign ReadData2 = (reg2 == 0) ? 32'h00000000 : registers[reg2];
+
+`else // CLOCKED_REGS
 
     // Register file of 32 32-bit registers. Register 0 is hardwired to 0s
     reg [31:0] registers [1:31];
@@ -89,7 +142,9 @@ module RegisterFile(
     assign ReadData1 = (ReadReg1 == 0) ? 32'h00000000 : registers[ReadReg1];
     assign ReadData2 = (ReadReg2 == 0) ? 32'h00000000 : registers[ReadReg2];
 
+`endif // CLOCKED_REGS
 `endif // CLOCKED_NEG_REGS
+`endif // DISTRAM
 
 endmodule
 

@@ -179,6 +179,7 @@ module MIPS32_ICache
     localparam  RS_INIT = 3;
 
     reg                     maybeFill;      // We may start a refill next cycle
+    reg                     extSeen;        // We have seen an external request
     reg                     relax;          // Relaxation cycle for wishbone
     wire                    flushing;       // Set if we are flushing
 
@@ -320,7 +321,7 @@ module MIPS32_ICache
     assign STB_O = fillStrobe || extStrobe;
     assign CTI_O = (fillStrobe && !last) ? 3'b010 : 3'b111;
     assign BTE_O = 2'b00;
-    assign ADR_O = extAddr;
+    assign ADR_O = !extStrobe ? extAddr : Address;
     assign DAT_O = 32'bx;
     assign SEL_O = 4'bx;
     assign WE_O = 1'b0;
@@ -376,7 +377,7 @@ module MIPS32_ICache
      */
 
     // True if the processor should stall, because there's no valid data for it
-    assign Stall = (miss) ||
+    assign Stall = (cachedAccess && miss) ||
                    (extStrobe && !ack) ||
                    relax ||
                    flushing;
@@ -398,6 +399,7 @@ module MIPS32_ICache
             state <= RS_INIT;
             cachedAccess <= 1'b0;
             maybeFill <= 1'b0;
+            extSeen <= 1'b0;
             relax <= 1'b0;
             extAddr <= 32'd0;
 
@@ -406,6 +408,10 @@ module MIPS32_ICache
             // Remember the type of access
             if (Enable)
                 cachedAccess <= Cached;
+
+            // Remember if we have seen an external request
+            if (Enable && !Cached)
+                extSeen <= 1'b1;
 
             // Clear pulse signals
             maybeFill <= 1'b0;
@@ -449,13 +455,14 @@ module MIPS32_ICache
                     state <= RS_FILLING;
                     extAddr <= {EarlyAddress[31:SET_LSB], {OFF_WIDTH+2{1'b0}}};
                 end
-                else if ((Enable && !Cached) || (!Enable && !cachedAccess))
+                else if ((Enable && !Cached) || extSeen)
                 begin
                     /*
                      *  Start an external access.
                      */
                     state <= RS_DIRECT;
-                    extAddr <= EarlyAddress;
+                    extSeen <= 1'b0;
+                    // extAddr <= EarlyAddress;
                 end
             end
 

@@ -186,7 +186,8 @@ module MIPS32_Processor(
     // External Memory Interface
 
     // Set if insn memory is cached.
-    wire ICached = (IF_PCIn[31] == 1'b0);
+    wire ICached = (IF_PCIn[12] == 1'b0);
+    // wire ICached = (IF_PCIn[31] == 1'b0);
 	// TBD, but for now the first 2GB is cached.
 
     // Startup cycle request, to happen on the second clock edge
