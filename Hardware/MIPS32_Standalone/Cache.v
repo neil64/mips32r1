@@ -167,16 +167,17 @@ module MIPS32_ICache
     wire                    fillStrobe;
     wire                    last;
 
-    reg                     extAccessDelayed;
     wire                    extStrobe;
+    wire                    extReady;
+    reg [31:0]              extHold;
 
     wire                    ack;
 
-    reg [1:0]               state;      // Refill engine state
-    localparam  RS_IDLE = 0;                // No cycle, waiting for processor
-    localparam  RS_FILLING = 1;             // Filling a cache line
-    localparam  RS_DIRECT = 2;              // Direct uncached cycle
-    localparam  RS_INIT = 3;
+    reg [1:0]               state;          // Refill engine state
+    localparam  RS_IDLE = 0;                 // No cycle, waiting for processor
+    localparam  RS_FILLING = 1;              // Filling a cache line
+    localparam  RS_DIRECT = 2;               // Direct uncached cycle
+    localparam  RS_INIT = 3;                 // Initializing the tag RAM
 
     reg                     maybeFill;      // We may start a refill next cycle
     reg                     extSeen;        // We have seen an external request
@@ -299,17 +300,16 @@ module MIPS32_ICache
 
     /****************************************/
     /*
-     *  External cycle logic.
+     *  Other interesting signals.
      */
 
     // True if we are asserting an external cycle for a direct access
     assign extStrobe = (state == RS_DIRECT);
 
-    /****************************************/
-    /*
-     *  Flush, invalidate, evict, ...
-     */
+    // True if external data is ready
+    assign extReady = (extStrobe && ack);
 
+    // We are flushing the cache
     assign flushing = (state == RS_INIT);
 
     /****************************************/
@@ -383,7 +383,8 @@ module MIPS32_ICache
                    flushing;
 
     // Route the data to the processor, either from cache or external memory
-    assign In = cachedAccess ? cacheData : DAT_I;
+    assign In = cachedAccess ? cacheData :
+                                extReady ? DAT_I : extHold;
 
     /**********************************************************************/
     /*
@@ -412,6 +413,10 @@ module MIPS32_ICache
             // Remember if we have seen an external request
             if (Enable && !Cached)
                 extSeen <= 1'b1;
+
+            // Remember external data in case the processor is stalled
+            if (extReady)
+                extHold <= DAT_I;
 
             // Clear pulse signals
             maybeFill <= 1'b0;
@@ -453,7 +458,7 @@ module MIPS32_ICache
                      *  the processor waiting to start a refill.  So go.
                      */
                     state <= RS_FILLING;
-                    extAddr <= {EarlyAddress[31:SET_LSB], {OFF_WIDTH+2{1'b0}}};
+                    extAddr <= {Address[31:SET_LSB], {OFF_WIDTH+2{1'b0}}};
                 end
                 else if ((Enable && !Cached) || extSeen)
                 begin

@@ -201,7 +201,6 @@ module MIPS32_Processor(
 
     assign Inst_EarlyAddress = { IF_PCIn[31:2], 2'b00 };
     assign Inst_Address = { IF_PCOut[31:2], 2'b00 };
-    assign Inst_Cached = ICached;
     assign Inst_Enable = !(IF_Stall | ID_Stall) || StartupStimulus[0];
 
     assign DataMem_Address = M_ALUResult[31:2];
@@ -386,7 +385,7 @@ module MIPS32_Processor(
         .clock   (clock),
         .reset   (reset),
         //.enable  (~IF_Stall),   // XXX verify. HERE. Was 1 but on stall latches PC+4, ad nauseum.
-        .enable (~(IF_Stall | ID_Stall)),
+        .enable (~(IF_Stall | ID_Stall) | StartupStimulus[0]),
         .D       (IF_PCIn),
         .Q       (IF_PCOut)
     );
