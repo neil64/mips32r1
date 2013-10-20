@@ -33,11 +33,31 @@ module MIPS32_RAM
     reg [DWIDTH-1 : 0]	mem[0 : (1<<AWIDTH)-1];
     reg [AWIDTH-1 : 0]	ra;
 
+
+    // The bypass
+//    reg [DWIDTH-1 : 0]  bypass;
+//    reg                 bypassed;
+//    always @(posedge clock)
+//	if (reset)
+//	    bypassed <= 1'b0;
+//	else if (readEnable && writeEnable && readAddr == writeAddr)
+//	begin
+//	    bypassed <= 1'b1;
+//	    bypass <= writeData;
+//	end
+//	else if (readEnable || writeEnable)
+//	    bypassed <= 1'b0;
+
+
+    wire [DWIDTH-1 : 0]	bypass = writeData;
+    wire		bypassed = (writeAddr == ra && writeEnable);
+
+
     // The read side
     always @(posedge clock)
 	if (readEnable)
 	    ra <= readAddr;
-    assign readData = mem[ra];
+    assign readData = bypassed ? bypass : mem[ra];
 
 
     // The write side
@@ -71,6 +91,7 @@ module MIPS32_RAM
 endmodule
 
 
+`ifdef bogus
 
 module MIPS32_DPRAM
 #(
@@ -160,3 +181,4 @@ module MIPS32_DPRAM
 
 endmodule
 
+`endif // bogus

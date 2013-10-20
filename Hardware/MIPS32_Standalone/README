@@ -26,3 +26,38 @@ theoretical IPC from 1 to between 3 and 4.
 If your application requires maximum performance out of this processor,
 you should modify the memory handshake accordingly.
 
+==============================================================
+
+The modified memory handshake
+-----------------------------
+
+The XUM-MIPS32 processor models memory as an asynchronous RAM with zero
+delay, but with some modifications to allow for synchronous pipelined access.
+
+Instruction bus:
+
+At a clock edge, `Inst_Address' is updated by the processor with the address
+of the next word to be read from memory.  On the next clock edge, the value
+from the memory on the `Inst_In' signal is latched into the instruction
+decoder stage.  Conceptually, the memory controller must asynchronously
+provide the value addressed by `Inst_Address' in time for it to be latched on
+the next clock edge.  If the memory controller is unable to supply the value
+by the next clock edge, it must assert `Inst_Stall' for as many clocks as
+needed to provide the value.  Another way to look at this is that if
+`Inst_Stall' is false, the value on `Inst_In' must be the value addressed by
+`Inst_Address'.
+
+Since FPGA memory cells are never asynchronous, and external memory is rarely
+asynchronous, two more signals are provided to allow pipelined access to
+memory;  If `Inst_Enable' is true, the value on the `Inst_EarlyAddress'
+signal is the address that will become the `Inst_Address' on the next cycle.
+The memory controller can use this to latch the required value from memory
+before `Inst_Address' becomes valid.  In this way, it is possible to access
+memory in continouous single cycle pipelined operation.
+
+Data bus:
+
+The data bus operates in the same way as the instruction bus, but has
+additional signals to allow writes to memory.
+
+[ ...more to come... ]

@@ -379,7 +379,8 @@ module MIPS32_ICache
     // True if the processor should stall, because there's no valid data for it
     assign Stall = (cachedAccess && miss) ||
                    (extStrobe && !ack) ||
-                   relax ||
+                   extSeen ||
+                   // relax ||
                    flushing;
 
     // Route the data to the processor, either from cache or external memory

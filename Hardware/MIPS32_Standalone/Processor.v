@@ -185,24 +185,19 @@ module MIPS32_Processor(
 `ifdef NEWBUS
     // External Memory Interface
 
-    // Set if insn memory is cached.
-    wire ICached = (IF_PCIn[12] == 1'b0);
-    // wire ICached = (IF_PCIn[31] == 1'b0);
-	// TBD, but for now the first 2GB is cached.
-
-    // Startup cycle request, to happen on the second clock edge
-    // after reset goes away
-    reg [2:0] StartupStimulus;
-    always @(posedge clock)
+    reg [2:0] StartupStimulus;	    // Startup cycle request, to happen on the
+    always @(posedge clock)	    // second clock edge after reset goes away
 	if (reset)
 	    StartupStimulus <= 3'b100;
 	else
 	    StartupStimulus <= StartupStimulus >> 1;
 
+    // Instruction bus
     assign Inst_EarlyAddress = { IF_PCIn[31:2], 2'b00 };
     assign Inst_Address = { IF_PCOut[31:2], 2'b00 };
     assign Inst_Enable = !(IF_Stall | ID_Stall) || StartupStimulus[0];
 
+    // Data bus
     assign DataMem_Address = M_ALUResult[31:2];
 
 `else // NEWBUS
