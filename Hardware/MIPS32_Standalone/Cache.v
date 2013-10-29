@@ -201,10 +201,11 @@ module MIPS32_ICache
              *  Tag RAM.  An entry for each set, wide enough for the tag
              *  plus one valid bit.  One of these RAMs per way.
              */
-            MIPS32_RAM
+            MIPS32_Cache_RAM
             #(
                 .AWIDTH(TA_WIDTH),
-                .DWIDTH(TD_WIDTH)
+                .DWIDTH(TD_WIDTH),
+                .LANES(1)
             )
             tagRam
             (
@@ -217,6 +218,7 @@ module MIPS32_ICache
 
                 .writeAddr  (tagWriteAddr),
                 .writeData  (tagWriteData),
+                .writeLane  (4'b1111),
                 .writeEnable (tagWriteEnable[i])
             );
 
@@ -225,10 +227,11 @@ module MIPS32_ICache
              *  Data RAM.  A 32-bit word for each word in a cache line
              *  times the number of sets.  One of these RAMs for each way.
              */
-            MIPS32_RAM
+            MIPS32_Cache_RAM
             #(
                 .AWIDTH(DA_WIDTH),
-                .DWIDTH(32)
+                .DWIDTH(32),
+                .LANES(1)
             )
             dataRam
             (
@@ -241,6 +244,7 @@ module MIPS32_ICache
 
                 .writeAddr  (dataWriteAddr),
                 .writeData  (dataWriteData),
+                .writeLane  (4'b1111),
                 .writeEnable (dataWriteEnable[i])
             );
 
