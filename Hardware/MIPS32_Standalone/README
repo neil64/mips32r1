@@ -49,7 +49,7 @@ needed to provide the value.  Another way to look at this is that if
 
 Since FPGA memory cells are never asynchronous, and external memory is rarely
 asynchronous, two more signals are provided to allow pipelined access to
-memory;  If `Inst_Enable' is true, the value on the `Inst_EarlyAddress'
+memory;  If `Inst_Strobe' is true, the value on the `Inst_EarlyAddress'
 signal is the address that will become the `Inst_Address' on the next cycle.
 The memory controller can use this to latch the required value from memory
 before `Inst_Address' becomes valid.  In this way, it is possible to access
@@ -61,3 +61,7 @@ The data bus operates in the same way as the instruction bus, but has
 additional signals to allow writes to memory.
 
 [ ...more to come... ]
+
+
+
+// vim:set expandtab shiftwidth=4 softtabstop=4:

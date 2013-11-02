@@ -26,6 +26,25 @@ module MIPS32_Processor(
     input  reset,
     input  [4:0] Interrupts,            // 5 general-purpose hardware interrupts
     input  NMI,                         // Non-maskable interrupt
+`ifdef NEWBUS
+    // Instruction Memory Interface
+    output [31:0]   Inst_EarlyAddress,	// Instruction address, one cycle early
+    output	    Inst_EarlyStrobe,	// Valid access cycle
+    output [31:0]   Inst_Address,	// Normal instruction address;  PC
+    input	    Inst_Stall,		// Memory is stalling us
+    input [31:0]    Inst_In,		// Instruction data
+
+    // Data Memory Interface
+    output [31:0]   Data_EarlyAddress,	// Data address, one cycle early
+    output	    Data_EarlyWrite,	// Write strobe
+    output	    Data_EarlyStrobe,	// Valid access cycle
+    output [31:0]   Data_Address,	// Normal data address
+    output [31:0]   Data_Out,		// Data output, for write
+    output	    Data_Write,		// Write strobe
+    output [3:0]    Data_ByteSelect,	// Write lane selection, for write
+    input	    Data_Stall,		// Memory is stalling us
+    input [31:0]    Data_In,		// Instruction data
+`else // NEWBUS
     // Data Memory Interface
     input  [31:0] DataMem_In,
     input  DataMem_Ready,
@@ -34,14 +53,6 @@ module MIPS32_Processor(
     output [29:0] DataMem_Address,      // Addresses are words, not bytes.
     output [31:0] DataMem_Out,
     // Instruction Memory Interface
-`ifdef NEWBUS
-    output [31:0] Inst_EarlyAddress,	// Instruction address, one cycle early
-    output [31:0] Inst_Address,		// Normal instruction address;  PC
-    output	  Inst_Cached,		// Use the cache to satisfy the fetch
-    output	  Inst_Enable,		// Valid access cycle
-    input	  Inst_Stall,		// Memory is stalling us
-    input [31:0]  Inst_In,		// Instruction data
-`else // NEWBUS
     input  [31:0] InstMem_In,
     output [29:0] InstMem_Address,      // Addresses are words, not bytes.
     input  InstMem_Ready,
@@ -195,10 +206,7 @@ module MIPS32_Processor(
     // Instruction bus
     assign Inst_EarlyAddress = { IF_PCIn[31:2], 2'b00 };
     assign Inst_Address = { IF_PCOut[31:2], 2'b00 };
-    assign Inst_Enable = !(IF_Stall | ID_Stall) || StartupStimulus[0];
-
-    // Data bus
-    assign DataMem_Address = M_ALUResult[31:2];
+    assign Inst_EarlyStrobe = !(IF_Stall | ID_Stall) || StartupStimulus[0];
 
 `else // NEWBUS
 
@@ -667,6 +675,28 @@ module MIPS32_Processor(
         .clock         (clock),
         .reset         (reset),
         .DataIn        (M_WriteData_Pre),
+`ifdef NEWBUS
+        .EX_Address    (EX_ALUResult),
+        .EX_MemRead    (EX_MemRead),
+        .EX_MemWrite   (EX_MemWrite),
+        .EX_Byte       (EX_MemByte),
+        .EX_Half       (EX_MemHalf),
+        .EX_KernelMode (EX_KernelMode),
+        .EX_Left       (EX_Left),
+        .EX_Right      (EX_Right),
+        .EX_Stall      (EX_Stall),
+        .EX_Flush      (EX_Exception_Flush),
+        .M_Address     (M_ALUResult),
+        .M_MemRead     (M_MemRead),
+        .M_MemWrite    (M_MemWrite),
+        .M_Byte        (M_MemByte),
+        .M_Half        (M_MemHalf),
+        .M_KernelMode  (M_KernelMode),
+        .M_Left        (M_Left),
+        .M_Right       (M_Right),
+	.Mem_Stall     (Data_Stall),
+        .Mem_ReadData  (Data_In),
+`else // NEWBUS
         .Address       (M_ALUResult),
         .MReadData     (DataMem_In),
         .MemRead       (M_MemRead),
@@ -674,21 +704,32 @@ module MIPS32_Processor(
         .DataMem_Ready (DataMem_Ready),
         .Byte          (M_MemByte),
         .Half          (M_MemHalf),
-        .SignExtend    (M_MemSignExtend),
         .KernelMode    (M_KernelMode),
+        .Left          (M_Left),
+        .Right         (M_Right),
+`endif // NEWBUS
+        .SignExtend    (M_MemSignExtend),
         .ReverseEndian (M_ReverseEndian),
         .LLSC          (M_LLSC),
         .ERET          (ID_Eret),
-        .Left          (M_Left),
-        .Right         (M_Right),
         .M_Exception_Stall (M_Exception_Stall),
         
         .IF_Stall (IF_Stall),
         
         .DataOut       (M_MemReadData),
+`ifdef NEWBUS
+        .Mem_EarlyAddress (Data_EarlyAddress),
+        .Mem_EarlyWrite (Data_EarlyWrite),
+        .Mem_EarlyStrobe (Data_EarlyStrobe),
+        .Mem_Address (Data_Address),
+        .Mem_WriteData (Data_Out),
+	.Mem_Write     (Data_Write),
+        .Mem_ByteSelect (Data_ByteSelect),
+`else // NEWBUS
         .MWriteData    (DataMem_Out),
         .WriteEnable   (DataMem_Write),
         .ReadEnable    (DataMem_Read),
+`endif // NEWBUS
         .M_Stall       (M_Stall_Controller),
         .EXC_AdEL      (M_EXC_AdEL),
         .EXC_AdES      (M_EXC_AdES)

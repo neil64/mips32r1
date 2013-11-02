@@ -22,10 +22,36 @@
  *   and write command to data memory over a 32-bit data bus, where the read command
  *   is one bit and the write command is 4 bits, one for each byte in the 32-bit word.
  */
+
+`define NEWBUS
+
+
 module MemControl(
     input  clock,
     input  reset,
     input  [31:0] DataIn,           // Data from CPU
+`ifdef NEWBUS
+    input  [31:0] EX_Address,       // From CPU
+    input  EX_MemRead,              // Memory Read command from CPU
+    input  EX_MemWrite,             // Memory Write command from CPU
+    input  EX_Byte,                 // Load/Store is Byte (8-bit)
+    input  EX_Half,                 // Load/Store is Half (16-bit)
+    input  EX_KernelMode,           // (Exception logic)
+    input  EX_Left,                 // Unaligned Load/Store Word Left
+    input  EX_Right,                // Unaligned Load/Store Word Right
+    input  EX_Stall,
+    input  EX_Flush,
+    input  [31:0] M_Address,        // From CPU
+    input  M_MemRead,               // Memory Read command from CPU
+    input  M_MemWrite,              // Memory Write command from CPU
+    input  M_Byte,                  // Load/Store is Byte (8-bit)
+    input  M_Half,                  // Load/Store is Half (16-bit)
+    input  M_KernelMode,            // (Exception logic)
+    input  M_Left,                  // Unaligned Load/Store Word Left
+    input  M_Right,                 // Unaligned Load/Store Word Right
+    input  Mem_Stall,		    // Stall from Memory
+    input  [31:0] Mem_ReadData,     // Data from Memory
+`else // NEWBUS
     input  [31:0] Address,          // From CPU
     input  [31:0] MReadData,        // Data from Memory
     input  MemRead,                 // Memory Read command from CPU
@@ -33,41 +59,81 @@ module MemControl(
     input  DataMem_Ready,           // Ready signal from Memory
     input  Byte,                    // Load/Store is Byte (8-bit)
     input  Half,                    // Load/Store is Half (16-bit)
-    input  SignExtend,              // Sub-word load should be sign extended
     input  KernelMode,              // (Exception logic)
+    input  Left,                    // Unaligned Load/Store Word Left
+    input  Right,                   // Unaligned Load/Store Word Right
+`endif // NEWBUS
+    input  SignExtend,              // Sub-word load should be sign extended
     input  ReverseEndian,           // Reverse Endian Memory for User Mode
     input  LLSC,                    // (LLSC logic)
     input  ERET,                    // (LLSC logic)
-    input  Left,                    // Unaligned Load/Store Word Left
-    input  Right,                   // Unaligned Load/Store Word Right
     input  M_Exception_Stall,
     input  IF_Stall,                // XXX Clean this up between this module and HAZ/FWD
     output reg [31:0] DataOut,      // Data to CPU
+`ifdef NEWBUS
+    output [31:0] Mem_EarlyAddress, // Data address, one cycle early
+    output Mem_EarlyWrite,	    // New data memory cycle is a write
+    output Mem_EarlyStrobe,         // New data memory cycle
+    output [31:0] Mem_Address,      // Data address
+    output [31:0] Mem_WriteData,    // Data to Memory
+    output Mem_Write,		    // Write access
+    output [3:0] Mem_ByteSelect,    // Byte lane selection for writes
+`else // NEWBUS
     output [31:0] MWriteData,       // Data to Memory
     output reg [3:0] WriteEnable,   // Write Enable to Memory for each of 4 bytes of Memory
     output ReadEnable,              // Read Enable to Memory
+`endif // NEWBUS
     output M_Stall,
     output EXC_AdEL,                // Load Exception
     output EXC_AdES                 // Store Exception
     );
     
     `include "MIPS_Parameters.v"
+
+`ifdef NEWBUS
+    // Name space conversions for old names (temporary)
+    wire [31:0] Address = M_Address;
+    wire MemRead = M_MemRead;
+    wire MemWrite = M_MemWrite;
+    wire KernelMode = M_KernelMode;
+    wire Byte = M_Byte;
+    wire Half = M_Half;
+    wire Left = M_Left;
+    wire Right = M_Right;
+`endif // NEWBUS
     
     /*** Reverse Endian Mode
          Normal memory accesses in the processor are Big Endian. The endianness can be reversed
          to Little Endian in User Mode only.
     */
     wire BE = KernelMode | ~ReverseEndian;
-    
+
+`ifdef NEWBUS
+    /*** Indicator that the current memory reference must be word-aligned ***/
+    wire EX_Word = ~(EX_Half | EX_Byte | EX_Left | EX_Right);
+    wire M_Word = ~(M_Half | M_Byte | M_Left | M_Right);
+
+    // Exception Detection
+    wire EX_EXC_KernelMem = ~EX_KernelMode & (EX_Address < UMem_Lower);
+    wire EX_EXC_Word = EX_Word & (EX_Address[1] | EX_Address[0]);
+    wire EX_EXC_Half = EX_Half & EX_Address[0];
+    wire EX_MemoryException = (EX_EXC_KernelMem | EX_EXC_Word | EX_EXC_Half);
+    wire M_EXC_KernelMem = ~M_KernelMode & (M_Address < UMem_Lower);
+    wire M_EXC_Word = M_Word & (M_Address[1] | M_Address[0]);
+    wire M_EXC_Half = M_Half & M_Address[0];
+    assign EXC_AdEL = M_MemRead  & (M_EXC_KernelMem | M_EXC_Word | M_EXC_Half);
+    assign EXC_AdES = M_MemWrite & (M_EXC_KernelMem | M_EXC_Word | M_EXC_Half);
+`else // NEWBUS
     /*** Indicator that the current memory reference must be word-aligned ***/
     wire Word = ~(Half | Byte | Left | Right);
-    
+
     // Exception Detection
     wire EXC_KernelMem = ~KernelMode & (Address < UMem_Lower);
     wire EXC_Word = Word & (Address[1] | Address[0]);
     wire EXC_Half = Half & Address[0];    
     assign EXC_AdEL = MemRead  & (EXC_KernelMem | EXC_Word | EXC_Half);
     assign EXC_AdES = MemWrite & (EXC_KernelMem | EXC_Word | EXC_Half);
+`endif // NEWBUS
     
     /*** Load Linked and Store Conditional logic ***
     
@@ -118,6 +184,38 @@ module MemControl(
     end
     assign LLSC_MemWrite_Mask = (LLSC & MemWrite & (~LLSC_Atomic | (Address[31:2] != LLSC_Address)));
     
+`ifdef NEWBUS
+    /*
+     *	The new data memory bus interface logic.  EarlyStrobe will be true
+     *	if the next clock will load a new data memory access into the
+     *	M stage.  EarlyAddress and EarlyWrite are only valid if EarlyStrobe
+     *	is true.
+     *
+     *	FIXME:  I have neglected to take the LLSC logic into account here.
+     *		If the software uses the LL or SC instructions, things will
+     *		go wrong.  (Neil)
+     *
+     *		Also, the old access method takes IF_Stall into account,
+     *		but I can't see how it relates;  if that was for a bug fix,
+     *		then that bug now exists again.  (Neil)
+     */
+    assign Mem_EarlyAddress = EX_Address;
+    assign Mem_EarlyWrite = EX_MemWrite;	// <--- add LLSC logic
+    assign Mem_EarlyStrobe = (!M_Stall && !EX_Stall && !EX_Flush) &&
+			     ((EX_MemRead || EX_MemWrite) && !EX_MemoryException);
+    assign Mem_Address = M_Address;
+    wire [31:0] MWriteData;
+    assign Mem_WriteData = MWriteData;
+    assign Mem_Write = M_MemWrite && !EX_MemoryException && !LLSC_MemWrite_Mask;
+    reg [3:0] WriteEnable;
+    assign Mem_ByteSelect = WriteEnable;
+
+    assign M_Stall = Mem_Stall || M_Exception_Stall;
+    wire [31:0] MReadData = Mem_ReadData;
+
+    wire WriteCondition = Mem_Write;	    // Legacy signals
+    wire RW_Mask = 1'b0;		    // (to be removed)
+`else // NEWBUS
     wire WriteCondition = MemWrite & ~(EXC_KernelMem | EXC_Word | EXC_Half) & ~LLSC_MemWrite_Mask;
     wire ReadCondition  = MemRead  & ~(EXC_KernelMem | EXC_Word | EXC_Half);
     
@@ -127,6 +225,7 @@ module MemControl(
     end
     assign M_Stall = ReadEnable | (WriteEnable != 4'b0000) | DataMem_Ready    | M_Exception_Stall;
     assign ReadEnable  = ReadCondition  & ~RW_Mask;
+`endif // NEWBUS
     
     wire Half_Access_L  = (Address[1] ^  BE);
     wire Half_Access_R  = (Address[1] ~^ BE);
