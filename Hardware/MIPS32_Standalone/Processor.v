@@ -202,6 +202,7 @@ module MIPS32_Processor(
 	    StartupStimulus <= 3'b100;
 	else
 	    StartupStimulus <= StartupStimulus >> 1;
+    wire Startup_Stall = |StartupStimulus;
 
     // Instruction bus
     assign Inst_EarlyAddress = { IF_PCIn[31:2], 2'b00 };
@@ -288,6 +289,7 @@ module MIPS32_Processor(
         .MEM_MemRead         (M_MemRead),
         .MEM_MemWrite        (M_MemWrite),
 `ifdef NEWBUS
+	.Startup_Stall	     (Startup_Stall),
 	.Inst_Stall	     (Inst_Stall),
 `else // NEWBUS
         .InstMem_Read        (InstMem_Read),

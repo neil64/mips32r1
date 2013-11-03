@@ -44,6 +44,7 @@ module Hazard_Detection(
     input  InstMem_Read,
     input  InstMem_Ready,
 `ifdef NEWBUS
+    input  Startup_Stall,
     input  Inst_Stall,
 `endif // NEWBUS
     input  Mfc0,                // Using fwd mux; not part of haz/fwd.
@@ -170,7 +171,7 @@ module Hazard_Detection(
     assign EX_Stall = (EX_Stall_1 | EX_Stall_2 | EX_Exception_Stall) | EX_ALU_Stall | M_Stall;
     assign ID_Stall = (ID_Stall_1 | ID_Stall_2 | ID_Stall_3 | ID_Stall_4 | ID_Exception_Stall) | EX_Stall;
 `ifdef NEWBUS
-    assign IF_Stall = Inst_Stall | IF_Exception_Stall;
+    assign IF_Stall = Inst_Stall | Startup_Stall | IF_Exception_Stall;
 `else // NEWBUS
     assign IF_Stall = InstMem_Read | InstMem_Ready | IF_Exception_Stall;
 `endif // NEWBUS

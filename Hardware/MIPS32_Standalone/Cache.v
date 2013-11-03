@@ -163,7 +163,7 @@ module MIPS32_ICache
     wire [31:0]             cacheData;
     wire                    storeCache;
 
-    reg                     cachedAccess;
+    // reg                     cachedAccess;
     wire                    fillStrobe;
     wire                    last;
 
@@ -179,14 +179,26 @@ module MIPS32_ICache
     localparam  RS_DIRECT = 2;               // Direct uncached cycle
     localparam  RS_INIT = 3;                 // Initializing the tag RAM
 
-    reg                     activeAccess;   // We are responding to a request
-    reg                     strobeSeen;     // A strobe was seen
-    reg                     maybeFill;      // We may start a refill next cycle
-    reg                     extSeen;        // We have seen an external request
-    reg                     relax;          // Relaxation cycle for wishbone
+    // reg                     activeAccess;   // We are responding to a request
+    // reg                     strobeSeen;     // A strobe was seen
+    // reg                     maybeFill;      // We may start a refill next cycle
+    // reg                     extSeen;        // We have seen an external request
+    // reg                     relax;          // Relaxation cycle for wishbone
     wire                    flushing;       // Set if we are flushing
 
-    reg [31:0]              extAddr;        // External (wishbone) address
+    // reg [31:0]              extAddr;        // External (wishbone) address
+
+
+
+
+    wire [31:0]             fillAddr;       // Address we are filling from
+
+    reg                     accessActive;   // Active access from the CPU
+    reg                     accessCached;   // Active access is cached
+
+    reg [OFF_WIDTH-1:0]     fillOffset;     // Cache line offset for fill
+
+    reg [SET_WIDTH-1+1:0]   initAddr;       // Initialization address/counter
 
     /****************************************/
     /*
@@ -294,14 +306,19 @@ module MIPS32_ICache
      */
 
     // True if we are asserting an external cycle for refill
-    assign fillStrobe = (maybeFill && miss) || (state == RS_FILLING);
+    assign fillStrobe = ( (accessActive && accessCached && miss) ||
+                          (state == RS_FILLING) ) &&
+                        (state != RS_INIT);
+
+    // Address we are filling from
+    assign fillAddr = { Address[31:SET_LSB], fillOffset, 2'b00 };
 
     // True if this is the last refill cycle
     generate
         if (LINE_SIZE == 4)
             assign last = 1'b1;
         else
-            assign last = (extAddr[OFF_MSB : OFF_LSB] == {OFF_WIDTH{1'b1}});
+            assign last = (fillOffset == {OFF_WIDTH{1'b1}});
     endgenerate
 
     /****************************************/
@@ -327,7 +344,7 @@ module MIPS32_ICache
     assign STB_O = fillStrobe || extStrobe;
     assign CTI_O = (fillStrobe && !last) ? 3'b010 : 3'b111;
     assign BTE_O = 2'b00;
-    assign ADR_O = !extStrobe ? extAddr : Address;
+    assign ADR_O = !extStrobe ? fillAddr : Address;
     assign DAT_O = 32'bx;
     assign SEL_O = 4'bx;
     assign WE_O = 1'b0;
@@ -346,9 +363,10 @@ module MIPS32_ICache
     wire storeValid = !flushing;
 
     // Cache memory addresses to write incoming data
-    assign tagWriteAddr = extAddr[SET_MSB : SET_LSB];
-    assign tagWriteData = { extAddr[TAG_MSB : TAG_LSB], storeValid };
-    assign dataWriteAddr = extAddr[SET_MSB : OFF_LSB];
+    assign tagWriteAddr = !flushing ? fillAddr[SET_MSB : SET_LSB]
+                                    : initAddr[SET_WIDTH-1 : 0];
+    assign tagWriteData = { fillAddr[TAG_MSB : TAG_LSB], storeValid };
+    assign dataWriteAddr = fillAddr[SET_MSB : OFF_LSB];
 
     // Incoming cache fill data
     assign dataWriteData = DAT_I;
@@ -383,16 +401,15 @@ module MIPS32_ICache
      */
 
     // True if the processor should stall, because there's no valid data for it
-    assign Stall = activeAccess &&
-                   ( (cachedAccess && miss) ||
+    assign Stall = accessActive &&
+                   ( (accessCached && miss) ||
                      (extStrobe && !ack) ||
-                     extSeen ||
-                     // relax ||
                      flushing );
 
     // Route the data to the processor, either from cache or external memory
-    assign DataIn = cachedAccess ? cacheData :
+    assign DataIn = accessCached ? cacheData :
                                    extReady ? DAT_I : extHold;
+// Hold should not be necessary, as the CPU must collect data at !Stall
 
     /**********************************************************************/
     /*
@@ -406,86 +423,60 @@ module MIPS32_ICache
         begin
 
             state <= RS_INIT;
-            cachedAccess <= 1'b0;
-            maybeFill <= 1'b0;
-            strobeSeen <= 1'b0;
-            activeAccess <= 1'b0;
-            extSeen <= 1'b0;
-            relax <= 1'b0;
-            extAddr <= 32'd0;
+            accessActive <= 1'b0;
+            accessCached <= 1'b0;
+            fillOffset <= 0;
+            initAddr <= {SET_WIDTH+1{1'b0}};
+            // cachedAccess <= 1'b0;
+            // maybeFill <= 1'b0;
+            // strobeSeen <= 1'b0;
+            // activeAccess <= 1'b0;
+            // extSeen <= 1'b0;
+            // relax <= 1'b0;
+            // extAddr <= 32'd0;
 
         end else begin
 
-            if (activeAccess && !Stall)
-                activeAccess <= 1'b0;
-            if (EarlyStrobe)
-                activeAccess <= 1'b1;
-
-            // Remember the type of access
+            if (accessActive && !Stall)
+                accessActive <= 1'b0;
             if (EarlyStrobe)
             begin
-                strobeSeen <= 1'b1;
-                cachedAccess <= EarlyCached;
+                accessActive <= 1'b1;
+                accessCached <= EarlyCached;
             end
-
-            // Remember if we have seen an external request
-            if (EarlyStrobe && !EarlyCached)
-                extSeen <= 1'b1;
 
             // Remember external data in case the processor is stalled
             if (extReady)
                 extHold <= DAT_I;
 
             // Clear pulse signals
-            maybeFill <= 1'b0;
-            relax <= 1'b0;
+            // maybeFill <= 1'b0;
+            // relax <= 1'b0;
 
             // If we retrieved data for the cache, increment the address
             if (storeCache)
-                extAddr <= extAddr + 32'd4;
+                fillOffset <= fillOffset + 1;
+                // extAddr <= extAddr + 32'd4;
 
             // The state machine
             case (state)
 
             RS_IDLE:            // No active external access
             begin
-                if (maybeFill && miss && !(last && ack))
+                if (EarlyStrobe && EarlyCached)
                 begin
-                    /*
-                     *	Start the second cycle of the refill.  (Skip the
-                     *	additional cycles if our cache has a single word line
-                     *	size and the memory responded within a single cycle;
-                     *	rare but possible.)
-                     */
+// May never need to reset this;  it should always cycle
+                    // fillOffset <= {OFF_WIDTH{1'b0}};
+                end
+                else if ((accessActive && accessCached) &&
+                         (miss && !(last && ack)))
+                begin
                     state <= RS_FILLING;
                 end
-                else if (EarlyStrobe && EarlyCached)
+                else if ((EarlyStrobe && !EarlyCached) ||
+                         (accessActive && !accessCached))
                 begin
-                    /*
-                     *  Provisionally start a refill cycle.  At this point,
-                     *  we need to take note of the cached access and potential
-                     *  refill, but only if there is a cache miss.
-                     */
-                    maybeFill <= 1'b1;
-                    extAddr <= {EarlyAddress[31:SET_LSB], {OFF_WIDTH+2{1'b0}}};
-                end
-                else if (strobeSeen && cachedAccess && miss)
-                begin
-                    /*
-                     *  We just finished some sort of cycle and we are finding
-                     *  the processor waiting to start a refill.  So go.
-                     */
-                    state <= RS_FILLING;
-                    extAddr <= {Address[31:SET_LSB], {OFF_WIDTH+2{1'b0}}};
-                end
-                else if ((EarlyStrobe && !EarlyCached) || extSeen)
-                begin
-                    /*
-                     *  Start an external access.
-                     */
                     state <= RS_DIRECT;
-                    extSeen <= 1'b0;
-                    // extAddr <= EarlyAddress;
                 end
             end
 
@@ -498,7 +489,7 @@ module MIPS32_ICache
                      *	Stop the refill.
                      */
                     state <= RS_IDLE;
-                    strobeSeen <= 1'b0;
+                    // strobeSeen <= 1'b0;
                 end
             end
 
@@ -513,16 +504,31 @@ module MIPS32_ICache
                      *  from the next on the Wishbone bus.
                      */
                     state <= RS_IDLE;
-                    relax <= 1'b1;
-                    strobeSeen <= 1'b0;
+                    // relax <= 1'b1;
+                    // strobeSeen <= 1'b0;
                 end
             end
 
             RS_INIT:
             begin
-                if (extAddr[TAG_LSB])
+                /*
+                 *  Loop initializing all cache lines to invalid.
+                 *  Note that this will be removed in the final version,
+                 *  since the MIPS32 CPU reset with the cache in an
+                 *  unknown state, and software clears it, which is what
+                 *  this will do in the end.  But for now, and to help
+                 *  simulation, we clear it.  Also, we set the address
+                 *  to all ones at reset, so that the first write cycle
+                 *  gets repeated, just in case the first fails for being
+                 *  too close to reset.
+                 */
+                if (initAddr[SET_WIDTH] == 1'b1)
                     state <= RS_IDLE;
-                extAddr <= extAddr + (1 << SET_LSB);
+                initAddr <= initAddr + 1;
+
+                // if (extAddr[TAG_LSB])
+                    // state <= RS_IDLE;
+                // extAddr <= extAddr + (1 << SET_LSB);
             end
 
             endcase
