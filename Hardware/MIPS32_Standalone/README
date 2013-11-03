@@ -64,4 +64,17 @@ additional signals to allow writes to memory.
 
 
 
+Notes:
+
+*  New cycle started when EarlyStrobe is true.
+*  Cycle ends when Stall is false.
+*  Data should be captured by the CPU on the cycle that Stall is false,
+   but it can be later.
+*  Data from the cache (or memory) must remain valid on `In' so long as
+   `Address' refers to the same address.  Once `Address' changes, `In'
+   becomes invalid.  I-cache implements this by holding the last data
+   until the next active cycle (`Address' changes, but `In' doesn't).
+
+
+
 // vim:set expandtab shiftwidth=4 softtabstop=4:

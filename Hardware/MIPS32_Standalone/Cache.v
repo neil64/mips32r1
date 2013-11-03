@@ -403,13 +403,13 @@ module MIPS32_ICache
     // True if the processor should stall, because there's no valid data for it
     assign Stall = accessActive &&
                    ( (accessCached && miss) ||
+                     (!extStrobe && !accessCached) ||
                      (extStrobe && !ack) ||
                      flushing );
 
     // Route the data to the processor, either from cache or external memory
     assign DataIn = accessCached ? cacheData :
                                    extReady ? DAT_I : extHold;
-// Hold should not be necessary, as the CPU must collect data at !Stall
 
     /**********************************************************************/
     /*
