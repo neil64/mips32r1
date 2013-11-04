@@ -12,7 +12,8 @@
  *  cache line to use from the cache set, and `tag' is stored in the tag
  *  RAM to identify a cache line.  `l' equates to the number of bits in
  *  the offset address, and `s' equates to the number of bits in the
- *  set address plus 4.  (For a 512 set cache, this would be 13.)
+ *  set address plus `l'.  For example, for a 512 set cache with 16 byte
+ *  lines, `l' would be 4 and `s' would be 13.
  *
  *  When selecting the parameters for either of the caches, the following
  *  rules apply:
@@ -23,18 +24,19 @@
  *      of the cache.  Higher associativity results in much better hit
  *      rates at the cost of storage and extra logic.  The best tradeoff
  *      is WAYS=2.  The performance gains from WAYS=1 (direct-mapped) to
- *      WAYS=2 (2-way set associative) is significant;  WAYS > 2 offer
+ *      WAYS=2 (2-way set associative) are significant;  WAYS > 2 offer
  *      smaller and smaller gains.
  *
  *  Line size (LINE_SIZE):
- *      Can be 4, 8, 16, 32 or 64.  Every memory access requires several
- *      cycles to set up the access (the overhead) and a cycle for each word
- *      accessed.  Smaller line sizes increase the cost of this overhead, but
- *      result in better coverage of memory by the cache, ultimately reducing
- *      miss rates.  Larger line sizes are more efficient with memory access,
- *      but take longer to complete a fill (stalling the CPU for longer).  The
- *      best choice for this implementation is either 16 or 32, depending on
- *      the overhead of the memory controller.
+ *	Can be 4, 8, 16, 32 or 64.  For paged memory like SDRAM, every memory
+ *	access requires several cycles to set up the access (the overhead) and
+ *	a cycle for each word accessed.	 Smaller line sizes increase the cost
+ *	of this overhead, but result in better coverage of memory by the
+ *	cache, ultimately reducing miss rates.	Larger line sizes are more
+ *	efficient with memory access, but take longer to complete a fill
+ *	(stalling the CPU for longer).	The best choice for this
+ *	implementation is either 16 or 32, depending on the overhead of the
+ *	memory controller.
  *
  *  Sets (SETS):
  *      Must be a power-of-2 in size.  This is simply the size of the cache.
@@ -88,7 +90,7 @@ module MIPS32_ICache
     // Processor bus
     input [31:0]        EarlyAddress,   // Instruction address, one cycle early
     input               EarlyCached,    // Access should use the cache
-    input               EarlyStrobe,         // New access is available
+    input               EarlyStrobe,    // New access is available
     input [31:0]        Address,        // Instruction address (the PC)
     output              Stall,          // Result not yet available
     output [31:0]       DataIn,         // Resulting data
@@ -125,6 +127,7 @@ module MIPS32_ICache
 
     /****************************************/
 
+    // The processor address split, based on the cache size
     localparam  OFF_WIDTH = logb2(LINE_SIZE-1) - 2;
     localparam  OFF_LSB = 2;
     localparam  OFF_MSB = OFF_LSB + OFF_WIDTH - 1;
@@ -141,63 +144,56 @@ module MIPS32_ICache
 
     /****************************************/
 
+    // Tag RAM access signals
     wire [TA_WIDTH-1 : 0]   tagReadAddr;
     wire [TD_WIDTH-1 : 0]   tagReadData[0 : WAYS-1];
     wire [TA_WIDTH-1 : 0]   tagWriteAddr;
     wire [TD_WIDTH-1 : 0]   tagWriteData;
     wire [WAYS-1 : 0]       tagWriteEnable;
-    // wire                    tagWriteEnable[0 : WAYS-1];
 
+    // Data RAM access signals
     wire [DA_WIDTH-1 : 0]   dataReadAddr;
     wire [31 : 0]           dataReadData[0 : WAYS-1];
     wire [DA_WIDTH-1 : 0]   dataWriteAddr;
     wire [31 : 0]           dataWriteData;
     wire [WAYS-1 : 0]       dataWriteEnable;
-    // wire                    dataWriteEnable[0 : WAYS-1];
 
+    // The cache Way selection signals
     wire [TAG_WIDTH-1 : 0]  wayTag[0 : WAYS-1];
     wire [WAYS-1:0]         wayValid;
     wire [WAYS-1:0]         wayMatch;
     reg [WAYS-1:0]          waySelect;
-    wire                    miss;
     wire [31:0]             cacheData;
     wire                    storeCache;
 
-    // reg                     cachedAccess;
-    wire                    fillStrobe;
-    wire                    last;
+    // Processor access tracking
+    reg                     accessActive;   // Active access from the CPU
+    reg                     accessCached;   // Active access is cached
 
-    wire                    extStrobe;
-    wire                    extReady;
-    reg [31:0]              extHold;
+    // True if this cache access missed
+    wire                    miss;
 
-    wire                    ack;
+    // Cache fill signals
+    wire                    fillStrobe;     // True if we are currently filling
+    wire [31:0]             fillAddr;       // Address we are filling from
+    reg [OFF_WIDTH-1:0]     fillOffset;     // Cache line offset for fill
+    wire                    last;           // This is the last word of a fill
 
-    reg [1:0]               state;          // Refill engine state
+    // Cache bypass direct access signals
+    wire                    extStrobe;      // We are accessing directly
+    wire                    extReady;       // Direct access result is ready
+    reg [31:0]              extHold;        // Hold register for the result
+    wire                    ack;            // ACK from the wishbone bus
+
+    // The main memory access state machine
+    reg [1:0]               state;
     localparam  RS_IDLE = 0;                 // No cycle, waiting for processor
     localparam  RS_FILLING = 1;              // Filling a cache line
     localparam  RS_DIRECT = 2;               // Direct uncached cycle
     localparam  RS_INIT = 3;                 // Initializing the tag RAM
 
-    // reg                     activeAccess;   // We are responding to a request
-    // reg                     strobeSeen;     // A strobe was seen
-    // reg                     maybeFill;      // We may start a refill next cycle
-    // reg                     extSeen;        // We have seen an external request
-    // reg                     relax;          // Relaxation cycle for wishbone
-    wire                    flushing;       // Set if we are flushing
-
-    // reg [31:0]              extAddr;        // External (wishbone) address
-
-
-
-
-    wire [31:0]             fillAddr;       // Address we are filling from
-
-    reg                     accessActive;   // Active access from the CPU
-    reg                     accessCached;   // Active access is cached
-
-    reg [OFF_WIDTH-1:0]     fillOffset;     // Cache line offset for fill
-
+    // Cache flush signals
+    wire                    flushing;       // We are flushing (initializing)
     reg [SET_WIDTH-1+1:0]   initAddr;       // Initialization address/counter
 
     /****************************************/
@@ -408,8 +404,9 @@ module MIPS32_ICache
                      flushing );
 
     // Route the data to the processor, either from cache or external memory
-    assign DataIn = accessCached ? cacheData :
-                                   extReady ? DAT_I : extHold;
+    assign DataIn = accessCached ? cacheData
+                                 : extReady ? DAT_I
+                                            : extHold;
 
     /**********************************************************************/
     /*
@@ -427,36 +424,24 @@ module MIPS32_ICache
             accessCached <= 1'b0;
             fillOffset <= 0;
             initAddr <= {SET_WIDTH+1{1'b0}};
-            // cachedAccess <= 1'b0;
-            // maybeFill <= 1'b0;
-            // strobeSeen <= 1'b0;
-            // activeAccess <= 1'b0;
-            // extSeen <= 1'b0;
-            // relax <= 1'b0;
-            // extAddr <= 32'd0;
 
         end else begin
 
-            if (accessActive && !Stall)
-                accessActive <= 1'b0;
+            if (accessActive && !Stall)         // Access is complete when
+                accessActive <= 1'b0;           // Stall goes inactive
             if (EarlyStrobe)
             begin
-                accessActive <= 1'b1;
-                accessCached <= EarlyCached;
+                accessActive <= 1'b1;           // New access
+                accessCached <= EarlyCached;    // Remember if it is cached
             end
 
             // Remember external data in case the processor is stalled
             if (extReady)
                 extHold <= DAT_I;
 
-            // Clear pulse signals
-            // maybeFill <= 1'b0;
-            // relax <= 1'b0;
-
             // If we retrieved data for the cache, increment the address
             if (storeCache)
                 fillOffset <= fillOffset + 1;
-                // extAddr <= extAddr + 32'd4;
 
             // The state machine
             case (state)
@@ -465,17 +450,33 @@ module MIPS32_ICache
             begin
                 if (EarlyStrobe && EarlyCached)
                 begin
-// May never need to reset this;  it should always cycle
-                    // fillOffset <= {OFF_WIDTH{1'b0}};
+                    /*
+                     *  This is a new cached access.  There is nothing to do
+                     *  here -- if the access hits the cache, the data will
+                     *  be served up by the logic above, Stall left false;
+                     *  if it misses, the wishbone cycle is started above,
+                     *  and the state machine will catch it in the conditional
+                     *  just below.
+                     */
                 end
                 else if ((accessActive && accessCached) &&
                          (miss && !(last && ack)))
                 begin
+                    /*
+                     *  The cache access started in the last cycle has missed
+                     *  the cache and we need to refill.  The first cycle of
+                     *  the memory access is already under way, and we just
+                     *  need to get the state machine into the game.
+                     */
                     state <= RS_FILLING;
                 end
                 else if ((EarlyStrobe && !EarlyCached) ||
                          (accessActive && !accessCached))
                 begin
+                    /*
+                     *  This is a direct access to the memory, bypassing the
+                     *  cache.  Get the state machine into the fray.
+                     */
                     state <= RS_DIRECT;
                 end
             end
@@ -489,7 +490,6 @@ module MIPS32_ICache
                      *	Stop the refill.
                      */
                     state <= RS_IDLE;
-                    // strobeSeen <= 1'b0;
                 end
             end
 
@@ -499,13 +499,9 @@ module MIPS32_ICache
                 begin
                     /*
                      *  We received the data from the external memory.
-                     *  Exit the external cycle state, and note the need for
-                     *  a "relax" cycle next -- we must separate this cycle
-                     *  from the next on the Wishbone bus.
+                     *  Exit the external cycle state.
                      */
                     state <= RS_IDLE;
-                    // relax <= 1'b1;
-                    // strobeSeen <= 1'b0;
                 end
             end
 
@@ -525,10 +521,6 @@ module MIPS32_ICache
                 if (initAddr[SET_WIDTH] == 1'b1)
                     state <= RS_IDLE;
                 initAddr <= initAddr + 1;
-
-                // if (extAddr[TAG_LSB])
-                    // state <= RS_IDLE;
-                // extAddr <= extAddr + (1 << SET_LSB);
             end
 
             endcase

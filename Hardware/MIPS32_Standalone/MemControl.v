@@ -121,6 +121,7 @@ module MemControl(
     wire M_EXC_KernelMem = ~M_KernelMode & (M_Address < UMem_Lower);
     wire M_EXC_Word = M_Word & (M_Address[1] | M_Address[0]);
     wire M_EXC_Half = M_Half & M_Address[0];
+    wire M_MemoryException = (M_EXC_KernelMem | M_EXC_Word | M_EXC_Half);
     assign EXC_AdEL = M_MemRead  & (M_EXC_KernelMem | M_EXC_Word | M_EXC_Half);
     assign EXC_AdES = M_MemWrite & (M_EXC_KernelMem | M_EXC_Word | M_EXC_Half);
 `else // NEWBUS
@@ -206,7 +207,7 @@ module MemControl(
     assign Mem_Address = M_Address;
     wire [31:0] MWriteData;
     assign Mem_WriteData = MWriteData;
-    assign Mem_Write = M_MemWrite && !EX_MemoryException && !LLSC_MemWrite_Mask;
+    assign Mem_Write = M_MemWrite && !M_MemoryException && !LLSC_MemWrite_Mask;
     reg [3:0] WriteEnable;
     assign Mem_ByteSelect = WriteEnable;
 
