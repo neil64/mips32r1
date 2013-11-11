@@ -3,11 +3,11 @@
 /*
  *  A wrapper for block RAM.
  *
- *  Carefully arrange verilog so that the symthesis tools will infer
+ *  Carefully arranged verilog so that the synthesis tools will infer
  *  block RAM of the correct shape.
  */
 
-// `define XILINX
+`define XILINX
 
 
 /*
@@ -39,6 +39,70 @@ module MIPS32_Cache_RAM
 
 `ifdef XILINX
 
+    /*
+     *	Maintain a copy of the read address for when the cache is not actively
+     *	reading.  The Xilinx RAM only changes its output when read enable is
+     *	active, so we keep supplying the remembered address to the block RAM
+     *	so it keeps supplying up to date data.
+     */
+    reg [AWIDTH-1:0] rdAddr0;
+    always @(posedge clock)
+        if (readEnable)
+            rdAddr0 <= readAddr;
+    wire [AWIDTH-1:0] rdAddr = readEnable ? readAddr : rdAddr0;
+
+    /*
+     *  Staging variables.
+     */
+    wire [DWIDTH-1:0] rdData;       // Read data from the RAM cell
+    wire bypass0;                   // Same cycle bypass
+    reg bypass1;                    // Previous bypass
+    reg [DWIDTH-1:0] wrData1;       // Previous write data
+
+    /*
+     *	Record if there was a address collision and remember the previous
+     *	write data to be supplied on collision.
+     */
+    always @(posedge clock)
+    begin
+        bypass1 <= bypass0;         // Remember the collision
+        wrData1 <= writeData;       // Remember the alternate data
+    end
+
+    /*
+     *	True of there is an address collision between the read and the write
+     *	sides.	If so, the Xilinx block RAM will either supply old data or
+     *	corrupted data, depending on how it was configured.
+     */
+    assign bypass0 = (rdAddr == writeAddr && writeEnable);
+
+    /*
+     *  Route the correct data in response to the read request.
+     */
+    assign readData = bypass0 ? writeData :
+                      bypass1 ? wrData1 :
+                                rdData;
+
+
+    /*
+     *  The bypass -- route data from the write side when writing, since the
+     *  Xilinx RAM gives unpredictable results when reading from the same
+     *  location and a write on the other port.
+    wire [DWIDTH-1:0] rdData;
+    // wire bypass = (writeAddr == rdAddr && writeEnable);
+    reg bypass;
+    reg [DWIDTH-1:0] xdata;
+    always @(posedge clock)
+    begin
+        bypass <= (writeAddr == rdAddr && writeEnable);
+        xdata <= writeData;
+    end
+    assign readData = bypass ? writeData : rdData;
+     */
+
+    /*
+     *  The RAM.
+     */
     XilinxBlockRAM
     #(
         .AWIDTH(AWIDTH),
@@ -49,11 +113,11 @@ module MIPS32_Cache_RAM
         .clk                (clock),
         .rst                (reset),
 
-        .p0_addr            (readAddr),
-        .p0_en              (readEnable),
+        .p0_addr            (rdAddr),       //  (readAddr),
+        .p0_en              (1'b1),         //  (readEnable),
         .p0_wen             ({LANES{1'b0}}),
         .p0_wdata           ({DWIDTH{1'b0}}),
-        .p0_rdata           (readData),
+        .p0_rdata           (rdData),       //  (readData),
 
         .p1_addr            (writeAddr),
         .p1_en              (writeEnable),
@@ -784,6 +848,186 @@ module myRAM16
 `endif // XILINX
 
 `endif // crap3
+
+
+/**********************************************************************/
+/**********************************************************************/
+
+// `ifdef crap4
+`ifdef XILINX
+
+/*
+ *	A wrapper for the Xilinx block RAM.
+ */
+
+module XilinxBlockRAM
+#(
+    parameter	AWIDTH = 9,	        // Address width
+                DWIDTH = 22,            // Data width
+                LANES = 1               // (byte lanes)
+)
+(
+    input		    clk,
+    input		    rst,
+
+    input [AWIDTH-1 : 0]    p0_addr,
+    input		    p0_en,
+    input [LANES-1 : 0]     p0_wen,
+    input [DWIDTH-1 : 0]    p0_wdata,
+    output [DWIDTH-1 : 0]   p0_rdata,
+
+    input [AWIDTH-1 : 0]    p1_addr,
+    input		    p1_en,
+    input [LANES-1 : 0]     p1_wen,
+    input [DWIDTH-1 : 0]    p1_wdata,
+    output [DWIDTH-1 : 0]   p1_rdata
+);
+
+    /****************************************/
+
+    //  The RAM cell data width given the address width
+    localparam  QW = (AWIDTH <=  9) ? 36 :
+                     (AWIDTH == 10) ? 18 :
+                     (AWIDTH == 11) ? 9 :
+                     (AWIDTH == 12) ? 4 :
+                     (AWIDTH == 13) ? 2 :
+                     (AWIDTH == 14) ? 1 :
+                     0;
+
+    //  Size of the data, parity and byte-enable paths
+    localparam  QDW = (QW <= 4) ? QW : (QW & ~7);
+    localparam  QPW = (QW <= 4) ?  0 : (QW & 7);
+    localparam  QBW = (QW <= 9) ?  1 :
+                      (QW <= 18) ? 2 :
+                                   4;
+
+    //  Address shift needed to match the Xilinx block RAM
+    localparam  AS = (DWIDTH ==  1) ? 0 :
+                     (DWIDTH ==  2) ? 1 :
+                     (DWIDTH <=  4) ? 2 :
+                     (DWIDTH <=  9) ? 3 :
+                     (DWIDTH <= 18) ? 4 :
+                                      5;
+
+    //  Number of RAM cells needed
+    localparam  RAMS = (DWIDTH+QW-1) / QW;
+
+    /****************************************/
+
+    /*
+     *	Intermediate address.  Left shifted depending on the block RAM data
+     *	width used (QW), since the RAM expects the address to be left
+     *	justified.
+     */
+    wire [31:0]     addr0 = { {32-AWIDTH-AS{1'b0}},
+                              p0_addr,
+                              {AS{1'b0}} };
+    wire [31:0]     addr1 = { {32-AWIDTH-AS{1'b0}},
+                              p1_addr,
+                              {AS{1'b0}} };
+
+    //  RAM cell read data, one for each RAM call
+    wire [QW-1:0]   rData0[0:RAMS];
+    wire [QW-1:0]   rData1[0:RAMS];
+
+    //  RAM cell write data
+    wire [QW-1:0]   wData0[0:RAMS];
+    wire [QW-1:0]   wData1[0:RAMS];
+
+    //  Enable for all RAM cells
+    wire            en0 = p0_en;
+    wire            en1 = p1_en;
+
+    //  Byte write enable for all RAM cells
+    wire [QBW-1:0]  be0 = {QBW{p0_wen}};
+    wire [QBW-1:0]  be1 = {QBW{p1_wen}};
+
+    /****************************************/
+
+    function integer o1;
+        input [31:0] o0;
+        begin
+            o1 = o0 + QW - 1;
+            if (o1 >= DWIDTH)
+                o1 = DWIDTH - 1;
+        end
+    endfunction
+
+    genvar i, o0;
+    generate
+
+        for (o0 = 0; o0 < DWIDTH; o0 = o0 + QW)
+        begin
+            // Read data routing
+            assign p0_rdata[o1(o0):o0] = rData0[o0/QW][o1(o0)-o0:0];
+            assign p1_rdata[o1(o0):o0] = rData1[o0/QW][o1(o0)-o0:0];
+
+            // Write data routing
+            assign wData0[o0/QW][o1(o0)-o0:0] = p0_wdata[o1(o0):o0];
+            assign wData1[o0/QW][o1(o0)-o0:0] = p1_wdata[o1(o0):o0];
+        end
+
+        /************************/
+
+        /*
+         *  Make enough block RAM cells to cover the requested area.
+         */
+        for (i = 0; i < RAMS; i = i + 1)
+        begin : ram
+
+            RAMB16BWER
+            #(
+                .DATA_WIDTH_A(QW),
+                .DATA_WIDTH_B(QW),
+                .DOA_REG(0),
+                .DOB_REG(0),
+                .EN_RSTRAM_A("TRUE"),
+                .EN_RSTRAM_B("TRUE"),
+                .INIT_FILE("NONE"),
+                .RSTTYPE("SYNC"),
+                .RST_PRIORITY_A("CE"),
+                .RST_PRIORITY_B("CE"),
+                .SIM_COLLISION_CHECK("ALL"),
+                .SIM_DEVICE("SPARTAN6"),
+                .SRVAL_A({QW{1'b0}}),
+                .SRVAL_B({QW{1'b0}}),
+                .WRITE_MODE_A("READ_FIRST"),
+                .WRITE_MODE_B("READ_FIRST")
+            )
+            xram
+            (
+                .DOA(rData0[i][QDW-1:0]),
+                .DOPA(rData0[i][QW-1:QDW]),
+                .ADDRA(addr0[13:0]),
+                .CLKA(clk),
+                .ENA(en0),
+                .REGCEA(1'b1),
+                .RSTA(rst),
+                .WEA(be0),
+                .DIA(wData0[i][QDW-1:0]),
+                .DIPA(wData0[i][QW-1:QDW]),
+
+                .DOB(rData1[i][QDW-1:0]),
+                .DOPB(rData1[i][QW-1:QDW]),
+                .ADDRB(addr1[13:0]),
+                .CLKB(clk),
+                .ENB(en1),
+                .REGCEB(1'b1),
+                .RSTB(rst),
+                .WEB(be1),
+                .DIB(wData1[i][QDW-1:0]),
+                .DIPB(wData1[i][QW-1:QDW])
+            );
+
+        end
+
+    endgenerate
+
+endmodule
+
+`endif // XILINX
+// `endif // crap4
+
 
 
 // vim:set expandtab shiftwidth=4 softtabstop=4 syntax=verilog:
